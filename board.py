@@ -137,10 +137,13 @@ def run_program(args, prog):
     if args.led_no_hardware_pulse:
         options.disable_hardware_pulsing = True
 
-    matrix = RGBMatrix(options=options)
-    offscreen = matrix.CreateFrameCanvas()
-    W, H = offscreen.width, offscreen.height
-
+    # Decode + tint every frame BEFORE touching hardware below: the
+    # rgbmatrix driver drops root->daemon after init, which loses read
+    # access to files under a locked-down home dir (e.g. drwx------
+    # /home/kai). Panel geometry is known from the flags, so stage the
+    # frames first.
+    W = args.led_cols * args.led_chain
+    H = args.led_rows
     frames = []
     for s in prog["screens"]:
         full = _resolve_root(s["image"])
@@ -157,6 +160,9 @@ def run_program(args, prog):
               file=sys.stderr, flush=True)
     print(f"program '{prog['program']}' {W}x{H} screens={len(frames)}",
           file=sys.stderr, flush=True)
+
+    matrix = RGBMatrix(options=options)
+    offscreen = matrix.CreateFrameCanvas()
 
     def blit(frame):
         for y in range(H):
