@@ -38,6 +38,7 @@ import os
 import re
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -45,10 +46,13 @@ THIS_DIR = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, THIS_DIR)
 
 import destfile
+import images
 import render
 
 PROGRAMS_DIR = os.path.join(THIS_DIR, "programs")
 BITMAPS_DIR = os.path.join(THIS_DIR, "bitmaps")
+PREVIEW_DIR = os.path.join(BITMAPS_DIR, ".preview")
+PREVIEW_REL = "bitmaps/.preview/preview.png"
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +621,96 @@ class Controller:
                 (f" ({'; '.join(warns)})" if warns else "")
             return self.snapshot()
 
+    # -- flash preview (shows one image on the board, then resumes) ---
+    def _colour_for(self, image):
+        """Effective colour string for a bitmap, else "full"."""
+        for name in _programs():
+            try:
+                data = destfile.load_dest(_dest_path(name))
+            except (OSError, ValueError, SystemExit):
+                continue
+            defaults = destfile.defaults_of(data)
+            for s in destfile.list_services(data):
+                for d in destfile.list_destinations(data, s):
+                    e = destfile.entry_of(data, s, d) or {}
+                    if image in (e.get("bitmaps") or []):
+                        ov = e.get("override") or {}
+                        c = ov.get("colour", ov.get("color"))
+                        if c is None:
+                            return destfile.colour_str(
+                                defaults["colour"])
+                        try:
+                            cc = destfile.parse_colour(c, "colour")
+                        except ValueError:
+                            return "full"
+                        if cc == "full":
+                            return "full"
+                        return "#%02x%02x%02x" % cc
+        return "full"
+
+    def flash(self, image, colour=None, seconds=10):
+        """Show one bitmap on the board for `seconds`, then resume.
+
+        Writes a preview stanza into the control file; the matrix loop
+        picks it up within ~0.5s and returns to the live selection when
+        it expires. The .dest file is untouched.
+        """
+        image = str(image or "").strip()
+        full = os.path.normpath(os.path.join(THIS_DIR, image))
+        if not full.startswith(BITMAPS_DIR + os.sep):
+            raise ValueError("bad image path")
+        if not os.path.isfile(full):
+            raise ValueError("no such image")
+        try:
+            secs = float(seconds)
+        except (TypeError, ValueError):
+            raise ValueError("seconds must be a number")
+        if secs <= 0 or secs > 120:
+            raise ValueError("seconds must be 1-120")
+        if colour is None:
+            colour = self._colour_for(image)
+        if not self.control:
+            raise ValueError("no control file configured")
+        base = {"program": self.program_name,
+                "service": self.service_name,
+                "destination": self.dest_name}
+        if os.path.isfile(self.control):
+            try:
+                with open(self.control) as f:
+                    c = json.load(f)
+                if isinstance(c, dict) and isinstance(c.get("program"),
+                                                     str):
+                    base = {"program": c.get("program"),
+                            "service": c.get("service"),
+                            "destination": c.get("destination")}
+            except (OSError, ValueError):
+                pass
+        try:
+            tmp = self.control + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({**base, "preview": {
+                    "image": image, "colour": colour,
+                    "seconds": secs, "at": time.time()}}, f)
+                f.write("\n")
+            os.replace(tmp, self.control)
+        except OSError as e:
+            raise ValueError(f"cannot write control: {e}")
+        with self.lock:
+            self.message = f"Flashing {os.path.basename(image)} on board"
+            return self.snapshot()
+
+    def stage_preview(self, png):
+        """Save a rendered preview to the staging slot. Returns rel path."""
+        if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("renderer produced a bad PNG")
+        full = os.path.join(THIS_DIR, PREVIEW_REL)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        tmp = full + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(png)
+        os.replace(tmp, full)
+        return PREVIEW_REL
+
 
 # ---------------------------------------------------------------------------
 # HTTP
@@ -701,6 +795,120 @@ def _shell(title, active, body):
             f"<div class=\"tabs\"><a href=\"/\"{t1}>Board</a>"
             f"<a href=\"/create\"{t2}>Create</a></div>"
             f"<div class=\"wrap\">{body}</div></body></html>")
+
+
+def edit_html(rel, w, h, dataurl):
+    """Pixel editor for one bitmap (LED-dot canvas, no reloads)."""
+    cfg = json.dumps({"image": rel, "w": w, "h": h,
+                      "src": dataurl}).replace("<", "\\u003c")
+    scales = "".join(
+        f"<option{' selected' if s == 4 else ''}>{s}</option>"
+        for s in (2, 3, 4, 6, 8, 12, 16))
+    body = f"""<div class="card"><h2>Editing <code>{_esc(rel)}</code>
+({_esc(w)}x{_esc(h)})</h2>
+<div class="row">
+<button id="t-paint" class="on">paint</button>
+<button id="t-erase">erase</button>
+<button id="t-pick" class="ghost">pick</button>
+<label>colour<input type="color" id="paint" value="#db9600"></label>
+<label>zoom<select id="zoom">{scales}</select></label>
+<button id="undo" class="ghost">undo</button>
+<button id="clear" class="danger">clear</button>
+<button id="reset" class="ghost">reset</button>
+<button id="save">Save</button>
+<a href="/create" style="color:#8cf">back to create</a>
+</div>
+<div style="overflow:auto;margin-top:8px"><canvas id="view"
+style="image-rendering:pixelated;background:#000;border:1px solid #3a3a42">
+</canvas></div>
+<div class="hint" id="emsg">drag to paint, one LED per pixel. Save writes the
+PNG back over the original.</div>
+<div class="hint" id="lit"></div>
+</div>
+<script>
+var CFG={cfg};
+var cv=document.getElementById('view');
+var cx=cv.getContext('2d');
+var off=document.createElement('canvas');
+off.width=CFG.w;off.height=CFG.h;
+var ox=off.getContext('2d',{{willReadFrequently:true}});
+var img=new Image();
+var scale=4,tool='paint',drawing=false,undo=[];
+function setTool(t){{tool=t;
+ ['paint','erase','pick'].forEach(function(k){{
+  document.getElementById('t-'+k).className=(k===t)?'on':'ghost';}});}}
+document.getElementById('t-paint').onclick=function(){{setTool('paint');}};
+document.getElementById('t-erase').onclick=function(){{setTool('erase');}};
+document.getElementById('t-pick').onclick=function(){{setTool('pick');}};
+document.getElementById('zoom').onchange=function(e){{
+ scale=parseInt(e.target.value,10)||4;render();}};
+function push(){{undo.push(ox.getImageData(0,0,CFG.w,CFG.h));
+ if(undo.length>30)undo.shift();}}
+document.getElementById('undo').onclick=function(){{
+ var d=undo.pop();if(!d)return;ox.putImageData(d,0,0);render();}};
+document.getElementById('clear').onclick=function(){{
+ if(!confirm('Clear to black?'))return;push();
+ ox.fillStyle='#000';ox.fillRect(0,0,CFG.w,CFG.h);render();}};
+document.getElementById('reset').onclick=function(){{
+ if(!confirm('Reload original?'))return;push();
+ ox.drawImage(img,0,0);render();}};
+function render(){{
+ cv.width=CFG.w*scale;cv.height=CFG.h*scale;
+ var d=ox.getImageData(0,0,CFG.w,CFG.h).data;
+ var lit=0;
+ cx.fillStyle='#000';cx.fillRect(0,0,cv.width,cv.height);
+ for(var y=0;y<CFG.h;y++){{for(var x=0;x<CFG.w;x++){{
+  var o=(y*CFG.w+x)*4;
+  var r=d[o],g=d[o+1],b=d[o+2];
+  var on=(r||g||b)?true:false;
+  if(on)lit++;
+  var px=x*scale,py=y*scale,r2=scale*0.38;
+  cx.beginPath();
+  cx.arc(px+scale/2,py+scale/2,r2,0,6.2832);
+  cx.fillStyle=on?('rgb('+r+','+g+','+b+')'):'#181818';
+  cx.fill();
+ }}}}
+ document.getElementById('lit').textContent=
+  lit+' lit pixels of '+(CFG.w*CFG.h);
+}}
+function cell(ev){{
+ var r=cv.getBoundingClientRect();
+ var x=Math.floor((ev.clientX-r.left)/r.width*CFG.w);
+ var y=Math.floor((ev.clientY-r.top)/r.height*CFG.h);
+ return [Math.max(0,Math.min(CFG.w-1,x)),
+         Math.max(0,Math.min(CFG.h-1,y))];
+}}
+function stroke(ev){{
+ var c=cell(ev),x=c[0],y=c[1];
+ if(tool==='pick'){{
+  var d=ox.getImageData(x,y,1,1).data;
+  var h='#'+((1<<24)+(d[0]<<16)+(d[1]<<8)+d[2]).toString(16).slice(1);
+  document.getElementById('paint').value=h;setTool('paint');return;
+ }}
+ ox.fillStyle=(tool==='erase')?'#000':
+  document.getElementById('paint').value;
+ ox.fillRect(x,y,1,1);render();
+}}
+cv.addEventListener('pointerdown',function(ev){{
+ ev.preventDefault();drawing=true;push();stroke(ev);
+ try{{cv.setPointerCapture(ev.pointerId);}}catch(e){{}}}});
+cv.addEventListener('pointermove',function(ev){{
+ if(!drawing)return;stroke(ev);}});
+window.addEventListener('pointerup',function(){{drawing=false;}});
+document.getElementById('save').onclick=async function(){{
+ var m=document.getElementById('emsg');m.textContent='saving...';
+ var r=await fetch('/api/bitmap/edit',{{method:'POST',
+  headers:{{'Content-Type':'application/json'}},
+  body:JSON.stringify({{image:CFG.image,
+   data:off.toDataURL('image/png')}})}});
+ var j=await r.json();
+ m.textContent=j.ok?('saved '+CFG.image):(j.error||'save failed');
+ m.className=j.ok?'hint ok':'hint err';
+}};
+img.onload=function(){{ox.drawImage(img,0,0);render();}};
+img.src=CFG.src;
+</script>"""
+    return _shell("Edit image", "create", body)
 
 
 def board_html(snap, pmap):
@@ -933,7 +1141,16 @@ function renderSvcs(){{
     b.className='danger';b.setAttribute('data-act','del-page');
     b.setAttribute('data-svc',sv.number);b.setAttribute('data-dest',d.name);
     b.setAttribute('data-img',img);
-    f.appendChild(im);f.appendChild(cap);f.appendChild(b);
+    var fl=document.createElement('button');fl.textContent='flash';
+    fl.setAttribute('data-act','flash-page');
+    fl.setAttribute('data-svc',sv.number);fl.setAttribute('data-dest',
+     d.name);fl.setAttribute('data-img',img);
+    var ed=document.createElement('button');ed.textContent='edit';
+    ed.className='ghost';ed.setAttribute('data-act','edit-page');
+    ed.setAttribute('data-svc',sv.number);ed.setAttribute('data-dest',
+     d.name);ed.setAttribute('data-img',img);
+    f.appendChild(im);f.appendChild(cap);
+    f.appendChild(fl);f.appendChild(ed);f.appendChild(b);
     strip.appendChild(f);}});
    if(!(d.bitmaps||[]).length){{var p=document.createElement('div');
     p.className='hint';p.textContent='no pages yet.';strip.appendChild(p);}}
@@ -973,6 +1190,16 @@ el('svcs').addEventListener('click',async function(e){{
  }}else if(act==='show-dest'){{
   j=await api('/api/show',{{program:S.program,service:svc,
    destination:dest}});
+ }}else if(act==='flash-page'){{
+  j=await api('/api/flash',{{image:b.getAttribute('data-img')}});
+  if(!j)return;
+  if(!j.ok){{toast('smsg',j.error||'failed',true);return;}}
+  S=j.state;renderSvcs();
+  toast('smsg',S.message||'flashing on board',false);
+  return;
+ }}else if(act==='edit-page'){{
+  location='/edit?image='+encodeURIComponent(b.getAttribute('data-img'));
+  return;
  }}else if(act==='del-page'){{
   if(!confirm('Delete this page?'))return;
   j=await api('/api/bitmap/delete',{{program:S.program,service:svc,
@@ -1053,14 +1280,15 @@ function textForm(){{return {{program:S.program,
   via_scale:el('tvia_scale').value}}}};}}
 async function previewText(){{
  toast('tmsg','rendering...',false);
+ var form=textForm();form.board=true;
  var r=await fetch('/api/render-preview',{{method:'POST',
   headers:{{'Content-Type':'application/json'}},
-  body:JSON.stringify(textForm())}});
+  body:JSON.stringify(form)}});
  var j=await r.json();
  if(!j.ok){{toast('tmsg',j.error||'preview failed',true);return;}}
  var im=el('tpreview');im.src=j.data;im.style.display='block';
  toast('tmsg',j.lit+' lit pixels'+(j.warnings.length?' - '+
-  j.warnings.join('; '):''),false);
+  j.warnings.join('; '):'')+(j.flashed?' - on the board for 10s':''),false);
 }}
 async function createText(){{
  toast('tmsg','creating...',false);
@@ -1143,6 +1371,13 @@ def serve(ctl, port):
                     snap, snap["program"],
                     snap.get("fonts") or []).encode(),
                     "text/html; charset=utf-8")
+            elif parts.path == "/edit":
+                q = urllib.parse.parse_qs(parts.query)
+                page = self._edit_page((q.get("image") or [""])[0])
+                if page is None:
+                    self._send(b"no such image", "text/plain", 404)
+                else:
+                    self._send(page, "text/html; charset=utf-8")
             elif parts.path == "/api/state":
                 self._json({"ok": True, "state": outer.snapshot()})
             elif parts.path == "/api/destfile":
@@ -1283,10 +1518,21 @@ def serve(ctl, port):
                     self._ok()
                 elif path == "/api/bitmap/upload":
                     self._bmp_upload(self._body(8 * 1024 * 1024) or {})
+                elif path == "/api/flash":
+                    b = self._body() or {}
+                    try:
+                        outer.flash(b.get("image"),
+                                    seconds=b.get("seconds", 10))
+                    except ValueError as e:
+                        self._fail(e)
+                        return
+                    self._ok()
                 elif path == "/api/render-preview":
                     self._render_preview(self._body() or {})
                 elif path == "/api/create-text":
                     self._create_text(self._body() or {})
+                elif path == "/api/bitmap/edit":
+                    self._bmp_edit(self._body(8 * 1024 * 1024) or {})
                 elif path == "/api/bitmap/delete":
                     b = self._body() or {}
 
@@ -1583,11 +1829,88 @@ def serve(ctl, port):
             except ValueError as e:
                 self._fail(e)
                 return
+            warnings = list(info.get("warnings", []))
+            flashed = False
+            if b.get("board"):
+                try:
+                    rel = outer.stage_preview(png)
+                    outer.flash(rel, colour="full", seconds=10)
+                    flashed = True
+                except ValueError as e:
+                    warnings.append(f"board flash failed: {e}")
             self._json({"ok": True,
                         "data": "data:image/png;base64," + base64.b64encode(
                             png).decode(),
                         "lit": info.get("lit", 0),
-                        "warnings": info.get("warnings", [])})
+                        "warnings": warnings,
+                        "flashed": flashed})
+
+        def _edit_page(self, rel):
+            """Editor HTML for one bitmap, or None."""
+            rel = str(rel or "")
+            full = os.path.normpath(os.path.join(THIS_DIR, rel))
+            if not full.startswith(BITMAPS_DIR + os.sep):
+                return None
+            if not os.path.isfile(full):
+                return None
+            try:
+                w, h, _ = images.decode_png(full)
+            except SystemExit:
+                return None
+            try:
+                with open(full, "rb") as f:
+                    raw = f.read()
+            except OSError:
+                return None
+            if len(raw) > 6 * 1024 * 1024:
+                return None
+            return edit_html(
+                rel, w, h,
+                "data:image/png;base64," + base64.b64encode(raw).decode()
+            ).encode()
+
+        def _bmp_edit(self, b):
+            """Save pixels from the /edit page back over a bitmap."""
+            rel = str(b.get("image", "") or "")
+            full = os.path.normpath(os.path.join(THIS_DIR, rel))
+            if not full.startswith(BITMAPS_DIR + os.sep):
+                self._fail("bad image path")
+                return
+            if not os.path.isfile(full):
+                self._fail("no such image")
+                return
+            data = str(b.get("data", "") or "")
+            if "," in data and data.startswith("data:"):
+                data = data.split(",", 1)[1]
+            try:
+                png = base64.b64decode(data, validate=True)
+            except Exception:
+                self._fail("bad image data (need PNG dataURL)")
+                return
+            if len(png) > 6 * 1024 * 1024:
+                self._fail("PNG too large (max 6MB)")
+                return
+            if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                self._fail("not a PNG file")
+                return
+            tmp = full + ".tmp"
+            try:
+                with open(tmp, "wb") as f:
+                    f.write(png)
+                try:
+                    images.decode_png(tmp)
+                except SystemExit as e:
+                    raise ValueError(f"unreadable PNG: {e}")
+                os.replace(tmp, full)
+            except (OSError, ValueError) as e:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                self._fail(str(e) or "save failed")
+                return
+            outer.message = f"Saved {os.path.basename(full)}"
+            self._ok()
 
         def _create_text(self, b):
             try:

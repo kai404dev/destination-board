@@ -68,6 +68,63 @@ def read_control(path=CONTROL_FILE):
     return (p, c.get("service"), c.get("destination"))
 
 
+def read_preview(path=CONTROL_FILE):
+    """Flash-preview written by the portal, or None.
+
+    Shape: {"image": "bitmaps/...png", "colour": "#rrggbb"|"full",
+    "seconds": 10, "at": <epoch>}. The board shows it once, then
+    resumes the live selection - no .dest changes involved.
+    """
+    try:
+        with open(path) as f:
+            c = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(c, dict):
+        return None
+    pv = c.get("preview")
+    if not isinstance(pv, dict):
+        return None
+    img = pv.get("image")
+    if not isinstance(img, str) or not img.strip():
+        return None
+    try:
+        secs = float(pv.get("seconds", 10))
+        at = float(pv.get("at", 0))
+    except (TypeError, ValueError):
+        return None
+    if secs <= 0:
+        return None
+    return {"image": img.strip(), "colour": pv.get("colour", "full"),
+            "seconds": secs, "at": at}
+
+
+def preview_expired(pv):
+    if pv is None:
+        return True
+    return time.time() - pv.get("at", 0) >= pv.get("seconds", 0)
+
+
+def load_preview(pv):
+    """Single-screen program for a flash-preview dict."""
+    full = _resolve_root(pv["image"])
+    if not os.path.isfile(full):
+        raise SystemExit(f"preview image {pv['image']} not found")
+    try:
+        colour = destfile.parse_colour(pv.get("colour", "full"),
+                                       "preview colour")
+    except ValueError as e:
+        raise SystemExit(str(e))
+    if colour is None:
+        colour = "full"
+    return {"program": "preview", "path": None,
+            "service": None, "destination": None,
+            "screens": [{"image": pv["image"], "colour": colour,
+                         "seconds": pv["seconds"], "service": "",
+                         "destination": "preview", "service_code": "",
+                         "service_name": "preview"}]}
+
+
 def write_control(program, service=None, destination=None,
                   path=CONTROL_FILE):
     tmp = path + ".tmp"
@@ -205,9 +262,14 @@ def run_program(args, prog):
 
 
 def run_dynamic(args, ctl):
-    """Matrix loop following the live portal selection."""
+    """Matrix loop following the live portal selection.
+
+    A flash-preview in the control file (portal Preview / flash)
+    takes over until it expires, then the live selection resumes.
+    """
     last = None
     last_file = read_control()
+    last_pv = None
     while True:
         ctl.refresh()
         cur_file = read_control()
@@ -222,6 +284,39 @@ def run_dynamic(args, ctl):
                 else:
                     print(f"control: ignoring {cur_file}",
                           file=sys.stderr, flush=True)
+        pv = read_preview()
+        if preview_expired(pv):
+            pv = None
+        if pv != last_pv:
+            last_pv = pv
+            if pv is not None:
+                try:
+                    prog = load_preview(pv)
+                except SystemExit as e:
+                    print(f"preview failed ({e}); keeping screens",
+                          file=sys.stderr, flush=True)
+                    time.sleep(2)
+                    continue
+                print(f"control: preview {pv['image']} "
+                      f"({pv['seconds']:g}s)",
+                      file=sys.stderr, flush=True)
+
+                def _pv_done(p=pv):
+                    cur = read_preview()
+                    if cur != p or cur is None or preview_expired(cur):
+                        return True
+                    return bool(ctl.refresh() or ctl.key() != last or
+                                read_control() != last_file)
+
+                args._watch = _pv_done
+                run_program(args, prog)
+                args._watch = None
+                if args.once:
+                    break
+                continue
+        if pv is not None:
+            time.sleep(0.5)
+            continue
         key = ctl.key()
         if key != last:
             try:

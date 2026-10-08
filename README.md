@@ -105,11 +105,15 @@ its own region:
   yet) are allowed.
 - **Create page from text** — type route / destination / via, pick layout,
   colour and BDF fonts (from `fonts/` only, never system fonts);
-  `Preview` renders the 240x40 blind, `Create + show` saves the PNG,
-  appends it and puts it on the board.
+  `Preview` renders the 240x40 blind in the browser *and* flashes it on
+  the real board for 10s; `Create + show` saves the PNG, appends it and
+  puts it on the board.
 - **Upload bitmap page** — PNG saved as
   `<route>-<destination>-<next-page>.png` under
   `bitmaps/<program>/<route>/` and appended to the destination.
+- **Edit images** — every page has `flash` (shows it on the board for 10s,
+  `.dest` untouched) and `edit` (pixel editor: LED-dot canvas,
+  paint/erase/pick, zoom, undo, save-back-over-original).
 
 ## Pi auto-start
 

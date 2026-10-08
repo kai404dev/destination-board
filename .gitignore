@@ -4,3 +4,4 @@ __pycache__/
 .env
 board_control.json.tmp
 programs/*.tmp
+bitmaps/.preview/
