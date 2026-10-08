@@ -10,6 +10,8 @@ style, same tint/fit/dim pipeline, same live `*_control.json` follow).
 - `portal.py` — web portal (create + upload programs, toggle the board)
 - `destfile.py` — `.dest` format model (load / validate / resolve)
 - `images.py` — stdlib PNG decode / scale / tint
+- `render.py` — text-to-bitmap renderer (BDF fonts from `fonts/` only)
+- `fonts/*.bdf` — bitmap fonts (the only font source; no system fonts)
 - `programs/*.dest` — programs (JSON, see below)
 - `bitmaps/<program>/<route>/<route>-<destination>-<page>.png` — pages
 - `board_control.json` — live pick the matrix follows (`program`,
@@ -93,6 +95,12 @@ that user (`sudo chown -R kai:kai /home/kai/destination-board`).
 - **Upload bitmap page** — PNG saved as
   `<route>-<destination>-<next-page>.png` under
   `bitmaps/<program>/<route>/` and appended to the destination.
+- **Create page from text** — type route / destination / via, pick layout,
+  colour and BDF fonts (from `fonts/` only, never system fonts);
+  `Preview` renders the 240x40 blind, `Create + show` saves the PNG,
+  appends it (new services/destinations created as needed, colour
+  override set to `full` since the pixels are final) and puts it on
+  the board.
 
 ## Pi auto-start
 
