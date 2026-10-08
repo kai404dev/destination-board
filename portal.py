@@ -765,40 +765,45 @@ class Controller:
 # ---------------------------------------------------------------------------
 
 STYLE = """*{box-sizing:border-box}
-body{background:#0d0d10;color:#ddd;font-family:Arial,Helvetica,sans-serif;
-margin:0;padding:20px;display:flex;flex-direction:column;align-items:center;
-gap:14px;min-height:100vh}
-h1{color:#ffb000;margin:0;font-size:22px}
-h2{color:#ffb000;font-size:16px;margin:14px 0 6px}
-.wrap{width:100%;max-width:860px;display:flex;flex-direction:column;gap:14px}
-.card{background:#16161b;border:1px solid #333;border-radius:10px;
-padding:12px 14px;font-size:13px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
-input,select,button{background:#222;color:#fff;border:1px solid #555;
-border-radius:6px;padding:6px 8px;font-size:13px}
-button{background:#1d5c2e;border-color:#1d5c2e;cursor:pointer}
-button.ghost{background:#1d3a4c;border-color:#1d3a4c}
-button.danger{background:#6e1b1b;border-color:#6e1b1b}
-.hint{color:#888;font-size:12px}
-.ok{color:#6f6}.err{color:#f66}
-.showing{font-size:15px}
-.showing b{color:#37e05a}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
-th,td{border-bottom:1px solid #333;padding:6px 8px;text-align:left;
-vertical-align:top}
-.strip{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
-.strip figure{margin:0;text-align:center}
-.strip img{width:180px;height:30px;object-fit:contain;background:#000;
-border-radius:4px;border:1px solid #3a3a42;image-rendering:pixelated}
-.strip figcaption{font-size:11px;color:#888;margin-top:2px}
-code{background:#000;padding:1px 5px;border-radius:4px;color:#ffb000}
-label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:#aaa}
+:root{--background:#101014;--text:#f2f0e9;--brand-colour-mid:#d89500;--danger:#8f1f1f;--line:#2e2e35}
+body{background:var(--background);color:var(--text);font-family:Arial,Helvetica,sans-serif;margin:0;padding:16px;display:flex;flex-direction:column;align-items:center;gap:12px;min-height:100vh}
+h1{color:var(--text);margin:0;font-size:20px}
+h2{color:var(--text);font-size:16px;margin:16px 0 8px}
+.wrap{width:100%;max-width:860px;display:flex;flex-direction:column;gap:8px}
+.card{background:var(--background);padding:4px 0;font-size:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+input,select,button{font-size:16px;background:var(--background);color:var(--text);border:1px solid var(--line);border-radius:.75em;padding:10px 12px;max-width:100%}
+input[type=color]{padding:4px;min-height:46px;min-width:60px}
+button{background:var(--brand-colour-mid);border-color:transparent;color:#111;font-weight:bold;cursor:pointer}
+button.danger{background:var(--danger);border-color:transparent;color:#fff}
+button.ghost{background:var(--background);color:var(--text);font-weight:normal}
+button.on{outline:2px solid var(--brand-colour-mid);outline-offset:1px}
+button:active{filter:brightness(1.15)}
+a{color:var(--brand-colour-mid);text-decoration:none}
+code{color:var(--brand-colour-mid)}
+label{display:flex;flex-direction:column;gap:4px;font-size:13px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
-.tabs{display:flex;gap:8px}
-.tabs a{background:#1b1b21;color:#9a9aa2;border:1px solid #34343e;
-border-radius:8px;padding:8px 22px;font-size:15px;text-decoration:none}
-.tabs a.on{background:#1d3a4c;color:#fff;border-color:#1d3a4c}
-@media(max-width:640px){.grid{grid-template-columns:1fr}}
+.tabs{display:flex;gap:22px}
+.tabs a{color:var(--text);font-size:17px;padding:8px 2px}
+.tabs a.on{color:var(--brand-colour-mid);font-weight:bold}
+.strip{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
+.strip figure{margin:0;text-align:center;display:flex;flex-direction:column;gap:6px;align-items:center}
+.strip img{width:180px;max-width:72vw;height:30px;object-fit:contain;background:#000;border:1px solid var(--line);image-rendering:pixelated}
+.strip figcaption{font-size:12px}
+.strip button{font-size:14px;padding:8px 12px}
+.showing{font-size:16px}
+.showing b{color:var(--brand-colour-mid)}
+.hint{font-size:13px;min-height:1.3em}
+.ok{color:var(--brand-colour-mid)}
+.err{color:#ff6b6b}
+details{margin-top:8px}
+summary{cursor:pointer;color:var(--brand-colour-mid);font-size:15px;padding:8px 0}
+canvas{background:#000;border:1px solid var(--line);image-rendering:pixelated;touch-action:none;max-width:100%}
+#tpreview{width:100%;max-width:480px;height:80px;object-fit:contain;background:#000;border:1px solid var(--line)}
+.canvaswrap{overflow:auto;margin-top:8px}
+[hidden]{display:none!important}
+:focus-visible{outline:2px solid var(--brand-colour-mid);outline-offset:1px}
+@media(max-width:640px){.grid{grid-template-columns:1fr}body{padding:12px}input,select{flex:1 1 140px}.strip img{width:160px}}
 """
 
 
@@ -839,7 +844,8 @@ def _shell(title, active, body):
             "<meta name=\"viewport\" content=\"width=device-width,"
             " initial-scale=1\">"
             f"<title>{_esc(title)}</title>"
-            f"<style>{STYLE}</style></head><body><h1>Destination board</h1>"
+            "<link rel=\"stylesheet\" href=\"/style.css\">"
+            "</head><body><h1>Destination board</h1>"
             f"<div class=\"tabs\"><a href=\"/\"{t1}>Board</a>"
             f"<a href=\"/create\"{t2}>Create</a></div>"
             f"<div class=\"wrap\">{body}</div></body></html>")
@@ -855,8 +861,8 @@ def edit_html(rel, w, h, dataurl):
     body = f"""<div class="card"><h2>Editing <code>{_esc(rel)}</code>
 ({_esc(w)}x{_esc(h)})</h2>
 <div class="row">
-<button id="t-paint" class="on">paint</button>
-<button id="t-erase">erase</button>
+<button id="t-paint" class="on ghost">paint</button>
+<button id="t-erase" class="ghost">erase</button>
 <button id="t-pick" class="ghost">pick</button>
 <label>colour<input type="color" id="paint" value="#db9600"></label>
 <label>zoom<select id="zoom">{scales}</select></label>
@@ -864,13 +870,10 @@ def edit_html(rel, w, h, dataurl):
 <button id="clear" class="danger">clear</button>
 <button id="reset" class="ghost">reset</button>
 <button id="save">Save</button>
-<a href="/create" style="color:#8cf">back to create</a>
+<a href="/create">back to create</a>
 </div>
-<div style="overflow:auto;margin-top:8px"><canvas id="view"
-style="image-rendering:pixelated;background:#000;border:1px solid #3a3a42">
-</canvas></div>
-<div class="hint" id="emsg">drag to paint, one LED per pixel. Save writes the
-PNG back over the original.</div>
+<div class="canvaswrap"><canvas id="view"></canvas></div>
+<div class="hint" id="emsg"></div>
 <div class="hint" id="lit"></div>
 </div>
 <script>
@@ -884,7 +887,7 @@ var img=new Image();
 var scale=4,tool='paint',drawing=false,undo=[];
 function setTool(t){{tool=t;
  ['paint','erase','pick'].forEach(function(k){{
-  document.getElementById('t-'+k).className=(k===t)?'on':'ghost';}});}}
+  document.getElementById('t-'+k).className=(k===t)?'on ghost':'ghost';}});}}
 document.getElementById('t-paint').onclick=function(){{setTool('paint');}};
 document.getElementById('t-erase').onclick=function(){{setTool('erase');}};
 document.getElementById('t-pick').onclick=function(){{setTool('pick');}};
@@ -984,8 +987,7 @@ def board_html(snap, pmap):
 {_sel("destination", dests, dst, "all destinations")}
 <button type="submit">Show on board</button>
 </div></form>
-<div class="hint">The line above follows the board live. This form is never
-rewritten - pick and press Show.</div></div>
+</div>
 <div class="card"><h2>Screens</h2><div class="strip" id="strip">{strip}</div>
 </div>
 <script>
@@ -1039,7 +1041,8 @@ async function tick(){{
 }}
 setInterval(tick,3000);
 </script>"""
-    return _shell("Board", "board", body)
+    title = "Board " + " ".join(p for p in (svc, dst) if p)
+    return _shell(title.strip() or "Board", "board", body)
 
 
 def create_html(snap, program, fonts):
@@ -1059,15 +1062,14 @@ def create_html(snap, program, fonts):
 <div class="row">
 {_sel("cprog", snap["programs"], program)}
 <button class="ghost" onclick="switchProgram()">Edit</button>
-<input id="newname" placeholder="new program e.g. citybus" size="18">
+<input id="newname" placeholder="new program" size="14">
 <button onclick="createProgram()">Create</button>
 <button class="danger" onclick="deleteProgram()">Delete</button>
 </div>
 <div class="row">
 <input type="file" id="destfile" accept=".dest,.json,application/json">
 <button class="ghost" onclick="uploadProgram()">Upload .dest</button>
-<a id="dl" href="/api/destfile?program={urllib.parse.quote(program or '')}"
-style="color:#8cf">download .dest</a>
+<a id="dl" href="/api/destfile?program={urllib.parse.quote(program or '')}">download .dest</a>
 </div>
 <div class="hint" id="pmsg"></div></div>
 <div class="card"><h2>Defaults</h2>
@@ -1078,8 +1080,7 @@ style="color:#8cf">download .dest</a>
 <label>px height<input id="dpxh" size="5"></label>
 <button onclick="saveDefaults()">Save defaults</button>
 </div>
-<div class="hint" id="dmsg"><code>full</code> is not allowed here - it is a
-per-destination override meaning "keep bitmap colours".</div>
+<div class="hint" id="dmsg"></div>
 <h2>Text defaults (house style for new pages)</h2>
 <div class="row">
 <label>route font<select id="froute_font"></select></label>
@@ -1094,24 +1095,24 @@ per-destination override meaning "keep bitmap colours".</div>
 </div></div>
 <div class="card"><h2>Services &amp; destinations</h2>
 <div class="row">
-<input id="nsvc" placeholder="service e.g. 43" size="8">
+<input id="nsvc" placeholder="service" size="8">
 <button class="ghost" onclick="addService()">Add service</button>
-<input id="ndest" placeholder="destination e.g. Sheffield" size="14">
-<input id="ncode" placeholder="code e.g. 001" size="7">
+<input id="ndest" placeholder="destination" size="14">
+<input id="ncode" placeholder="code" size="7">
 <button class="ghost" onclick="addDestination()">Add destination</button>
 </div>
 <div id="svcs"></div>
 <div class="hint" id="smsg"></div></div>
-<div class="card"><h2>Create page from text (fonts/ only)</h2>
+<div class="card"><h2>Create page from text</h2>
 <div class="grid">
-<label>service (route no.)<input id="tservice"></label>
-<label>destination slot<input id="tslot"></label>
-<label>route text<input id="troute"></label>
-<label>destination text<input id="ttext"></label>
-<label>via (optional)<input id="tvia"></label>
-<label>layout<select id="tstyle"><option value="top">top - via over dest</option><option value="bottom">bottom - dest over via</option><option value="left">left - via | dest</option><option value="right">right - dest | via</option></select></label>
+<label>service<input id="tservice"></label>
+<label>destination<input id="tslot"></label>
+<label>route<input id="troute"></label>
+<label>text<input id="ttext"></label>
+<label>via<input id="tvia"></label>
+<label>layout<select id="tstyle"><option value="top">top</option><option value="bottom">bottom</option><option value="left">left</option><option value="right">right</option></select></label>
 <label>colour<input id="tcolour" value="#DB9600"></label>
-<label>rotation secs (optional)<input id="trot" placeholder="default"></label>
+<label>rotation secs<input id="trot" placeholder="default"></label>
 <label>route font{_fontsel("troute_font", "10x20.bdf")}</label>
 <label>route scale<select id="troute_scale"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
 <label>dest font{_fontsel("tdest_font", "10x20.bdf")}</label>
@@ -1119,10 +1120,10 @@ per-destination override meaning "keep bitmap colours".</div>
 <label>via font{_fontsel("tvia_font", "6x13B.bdf")}</label>
 <label>via scale<select id="tvia_scale"><option selected>1</option><option>2</option><option>3</option><option>4</option></select></label>
 </div>
-<div class="row" id="replrow" style="display:none">Updating
+<div class="row" id="replrow" hidden>Updating
 <b id="replname"></b><button class="ghost" onclick="cancelReplace()">new page
 instead</button></div>
-<div class="row">Nudge (1px):
+<div class="row">Nudge:
 <select id="nfield"><option value="all">All</option><option value="route">Route</option><option value="dest">Dest</option><option value="via">Via</option></select>
 <button class="ghost" onclick="nudge(-1,0)">&#9664;</button>
 <button class="ghost" onclick="nudge(0,-1)">&#9650;</button>
@@ -1132,17 +1133,15 @@ instead</button></div>
 <span class="hint" id="nudgepos"></span></div>
 <div class="row"><button class="ghost" onclick="previewText()">Preview</button>
 <button onclick="createText()">Create + show on board</button></div>
-<img id="tpreview" alt="preview" style="width:100%;max-width:480px;height:80px;object-fit:contain;background:#000;border-radius:6px;border:1px solid #3a3a42;display:none;image-rendering:pixelated;margin-top:8px">
-<canvas id="tcanvas" style="display:none;image-rendering:pixelated;background:#000;border:1px solid #3a3a42;margin-top:8px;touch-action:none"></canvas>
-<div class="row" id="touchrow" style="display:none">
-<button id="tt-paint" class="on">paint</button>
-<button id="tt-erase">erase</button>
+<img id="tpreview" alt="preview" hidden>
+<canvas id="tcanvas" hidden></canvas>
+<div class="row" id="touchrow" hidden>
+<button id="tt-paint" class="on ghost">paint</button>
+<button id="tt-erase" class="ghost">erase</button>
 <button class="ghost" onclick="clearTouch()">clear</button>
 <button onclick="applyTouch()">Apply touch-ups</button>
-<span class="hint">dots paint on top of the render and travel with the text
-- repaint after every Preview</span></div>
-<div class="hint" id="tmsg">Rendered with BDF bitmap fonts from
-<code>fonts/</code> only - no system fonts. This card never reloads.</div>
+<span class="hint">dots paint on top of the render and travel with the text</span></div>
+<div class="hint" id="tmsg"></div>
 </div>
 <div class="card"><h2>Upload bitmap page</h2>
 <div class="row">
@@ -1151,8 +1150,7 @@ instead</button></div>
 <input type="file" id="upfile" accept=".png,image/png">
 <button onclick="uploadBitmap()">Upload + append page</button>
 </div>
-<div class="hint" id="upmsg">PNG only (ideally 240x40). Saved as
-<code>&lt;route&gt;-&lt;destination&gt;-&lt;next-page&gt;.png</code>.</div>
+<div class="hint" id="upmsg"></div>
 </div>
 <script>
 var S={data_json};
@@ -1181,8 +1179,7 @@ function renderSvcs(){{
   box.appendChild(h);
   sv.destinations.forEach(function(d){{
    var t=document.createElement('div');t.className='row';
-   t.innerHTML='<b>'+esc(d.name)+'</b><span class="hint">code '+
-    esc(d.service_code||'-')+' / '+esc(d.service_name||d.name)+'</span>'+
+   t.innerHTML='<b>'+esc(sv.number)+' '+esc(d.name)+'</b>'+
     '<button data-act="show-dest">show</button>'+
     '<button class="danger" data-act="del-dest">delete</button>'+
     '<details><summary>edit</summary><div class="row">'+
@@ -1203,9 +1200,7 @@ function renderSvcs(){{
     esc(d.override.px_height===undefined?'':d.override.px_height)+
     '" placeholder="default"></label>'+
     '<button data-act="save-dest">save</button>'+
-    '</div><div class="hint">Renaming the slot renames its PNG files too. '+
-    'Empty override fields fall back to defaults; saving with all four '+
-    'empty removes the override.</div></details>';
+    '</div></details>';
    t.setAttribute('data-svc',sv.number);t.setAttribute('data-dest',d.name);
    box.appendChild(t);
    var strip=document.createElement('div');strip.className='strip';
@@ -1314,7 +1309,7 @@ el('svcs').addEventListener('click',async function(e){{
   updateNudge();
   REPLACE=b.getAttribute('data-img');
   el('replname').textContent=REPLACE;
-  el('replrow').style.display='flex';
+  el('replrow').hidden=false;
   toast('smsg','text loaded below - Preview then Create to update',false);
   document.getElementById('tservice').scrollIntoView();
   return;
@@ -1473,8 +1468,8 @@ function drawTouch(){{
  var col=el('tcolour').value||'#DB9600';
  TOUCH.add.forEach(function(p){{tDot(p,col);}});
  TOUCH.del.forEach(function(p){{tDot(p,'#000');}});
- el('tcanvas').style.display='block';
- el('touchrow').style.display='flex';
+ el('tcanvas').hidden=false;
+ el('touchrow').hidden=false;
 }}
 timg.onload=function(){{drawTouch();}};
 function tCell(ev){{
@@ -1504,8 +1499,8 @@ function tBind(){{
 }}
 tBind();
 function setTMode(t){{TMODE=t;
- el('tt-paint').className=(t==='paint')?'on':'ghost';
- el('tt-erase').className=(t==='erase')?'on':'ghost';}}
+ el('tt-paint').className=(t==='paint')?'on ghost':'ghost';
+ el('tt-erase').className=(t==='erase')?'on ghost':'ghost';}}
 el('tt-paint').onclick=function(){{setTMode('paint');}};
 el('tt-erase').onclick=function(){{setTMode('erase');}};
 function clearTouch(){{TOUCH={{add:[],del:[]}};previewText();}}
@@ -1518,22 +1513,22 @@ async function previewText(){{
   body:JSON.stringify(form)}});
  var j=await r.json();
  if(!j.ok){{toast('tmsg',j.error||'preview failed',true);return;}}
- var im=el('tpreview');im.src=j.data;im.style.display='block';
+ var im=el('tpreview');im.src=j.data;im.hidden=false;
  timg.src=j.data;
- toast('tmsg',j.lit+' lit pixels'+(j.warnings.length?' - '+
-  j.warnings.join('; '):'')+(j.flashed?' - on the board for 10s':''),false);
+ toast('tmsg',j.lit+' lit pixels'+(j.warnings.length?' ('+
+  j.warnings.join('; ')+')':'')+(j.flashed?', on board 10s':''),false);
 }}
 async function createText(){{
  toast('tmsg','creating...',false);
  var form=textForm();if(REPLACE)form.replace=REPLACE;
  var j=await api('/api/create-text',form);
  if(!j.ok){{toast('tmsg',j.error||'create failed',true);return;}}
- REPLACE=null;el('replrow').style.display='none';
+ REPLACE=null;el('replrow').hidden=true;
  location='/';
 }}
 var REPLACE=null;
 function cancelReplace(){{REPLACE=null;
- el('replrow').style.display='none';}}
+ el('replrow').hidden=true;}}
 async function uploadBitmap(){{
  var f=el('upfile').files[0];
  if(!f){{toast('upmsg','pick a PNG file first',true);return;}}
@@ -1620,6 +1615,14 @@ def serve(ctl, port):
                     self._send(b"no such image", "text/plain", 404)
                 else:
                     self._send(page, "text/html; charset=utf-8")
+            elif parts.path == "/style.css":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/css; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                raw = STYLE.encode()
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
             elif parts.path == "/api/state":
                 self._json({"ok": True, "state": outer.snapshot()})
             elif parts.path == "/api/destfile":
