@@ -885,23 +885,40 @@ async function api(path,body){{
 function renderSvcs(){{
  var box=el('svcs');box.innerHTML='';
  (S.services||[]).forEach(function(sv){{
-  var h=document.createElement('h2');h.textContent='Service '+sv.number+' ';
-  var del=document.createElement('button');del.textContent='delete service';
-  del.className='danger';del.setAttribute('data-act','del-svc');
-  del.setAttribute('data-svc',sv.number);h.appendChild(del);
+  var h=document.createElement('h2');
+  h.setAttribute('data-svc',sv.number);
+  h.innerHTML='Service '+esc(sv.number)+' '+
+   '<input size="8" data-rensvc placeholder="new number...">'+
+   '<button data-act="ren-svc">rename</button> '+
+   '<button class="danger" data-act="del-svc">delete service</button>';
   box.appendChild(h);
   sv.destinations.forEach(function(d){{
    var t=document.createElement('div');t.className='row';
    t.innerHTML='<b>'+esc(d.name)+'</b><span class="hint">code '+
-    esc(d.service_code||'-')+'</span>'+
-    '<label>colour<input size="8" data-f="colour" value="'+
+    esc(d.service_code||'-')+' / '+esc(d.service_name||d.name)+'</span>'+
+    '<button data-act="show-dest">show</button>'+
+    '<button class="danger" data-act="del-dest">delete</button>'+
+    '<details><summary>edit</summary><div class="row">'+
+    '<label>slot<input data-e="slot" value="'+esc(d.name)+'"></label>'+
+    '<label>code<input data-e="service_code" size="7" value="'+
+    esc(d.service_code||'')+'"></label>'+
+    '<label>name<input data-e="service_name" value="'+
+    esc(d.service_name||'')+'"></label>'+
+    '<label>colour<input data-e="colour" size="8" value="'+
     esc(d.override.colour||'')+'" placeholder="default"></label>'+
-    '<label>rotation<input size="5" data-f="rotation_speed" value="'+
+    '<label>rotation<input data-e="rotation_speed" size="5" value="'+
     esc(d.override.rotation_speed===undefined?'':d.override.rotation_speed)+
     '" placeholder="default"></label>'+
-    '<button data-act="save-ov">save</button>'+
-    '<button data-act="show-dest">show</button>'+
-    '<button class="danger" data-act="del-dest">delete</button>';
+    '<label>px w<input data-e="px_width" size="5" value="'+
+    esc(d.override.px_width===undefined?'':d.override.px_width)+
+    '" placeholder="default"></label>'+
+    '<label>px h<input data-e="px_height" size="5" value="'+
+    esc(d.override.px_height===undefined?'':d.override.px_height)+
+    '" placeholder="default"></label>'+
+    '<button data-act="save-dest">save</button>'+
+    '</div><div class="hint">Renaming the slot renames its PNG files too. '+
+    'Empty override fields fall back to defaults; saving with all four '+
+    'empty removes the override.</div></details>';
    t.setAttribute('data-svc',sv.number);t.setAttribute('data-dest',d.name);
    box.appendChild(t);
    var strip=document.createElement('div');strip.className='strip';
@@ -938,12 +955,21 @@ el('svcs').addEventListener('click',async function(e){{
   if(!confirm('Delete '+dest+'?'))return;
   j=await api('/api/destination/delete',{{program:S.program,
    service:svc,destination:dest}});
- }}else if(act==='save-ov'){{
-  var ov={{}};
-  row.querySelectorAll('input[data-f]').forEach(function(i){{
-   ov[i.getAttribute('data-f')]=i.value;}});
-  j=await api('/api/destination/update',{{program:S.program,
-   service:svc,destination:dest,override:ov}});
+ }}else if(act==='ren-svc'){{
+  var rninp=row.querySelector('input[data-rensvc]');
+  var nn=rninp?rninp.value:'';
+  if(!nn){{toast('smsg','type the new service number first',true);return;}}
+  j=await api('/api/service/rename',{{program:S.program,
+   service:svc,new_name:nn}});
+ }}else if(act==='save-dest'){{
+  var f={{}};
+  row.querySelectorAll('input[data-e]').forEach(function(i){{
+   f[i.getAttribute('data-e')]=i.value;}});
+  j=await api('/api/destination/edit',{{program:S.program,
+   service:svc,destination:dest,new_name:f.slot,
+   service_code:f.service_code,service_name:f.service_name,
+   override:{{colour:f.colour,rotation_speed:f.rotation_speed,
+    px_width:f.px_width,px_height:f.px_height}}}});
  }}else if(act==='show-dest'){{
   j=await api('/api/show',{{program:S.program,service:svc,
    destination:dest}});
@@ -1232,8 +1258,12 @@ def serve(ctl, port):
                         outer.service_name = outer.dest_name = None
                     outer.refresh()
                     self._ok()
+                elif path == "/api/service/rename":
+                    self._rename_service(self._body() or {})
                 elif path == "/api/destination/add":
                     self._dest_upsert(self._body() or {}, need_new=True)
+                elif path == "/api/destination/edit":
+                    self._edit_destination(self._body() or {})
                 elif path == "/api/destination/update":
                     self._dest_upsert(self._body() or {}, need_new=False)
                 elif path == "/api/destination/delete":
@@ -1377,6 +1407,148 @@ def serve(ctl, port):
             except ValueError as e:
                 self._fail(e)
                 return
+            outer.refresh()
+            self._ok()
+
+        def _move_pages(self, program, service, old_slot, new_slot,
+                        new_service=None):
+            """Rename a destination's PNG files to a new stem.
+
+            Returns the rewritten bitmaps list. Files not matching the
+            expected `<route>-<destination>-<page>.png` pattern are left
+            untouched. Raises ValueError on collision.
+            """
+            pslug = destfile.slug(program)
+            svc = new_service or service
+            old_dir = f"bitmaps/{pslug}/{destfile.slug(service)}"
+            new_dir = f"bitmaps/{pslug}/{destfile.slug(svc)}"
+            old_stem = f"{service}-{destfile.slug(old_slot)}"
+            new_stem = f"{svc}-{destfile.slug(new_slot)}"
+            plan = []
+            try:
+                with open(_dest_path(program)) as f:
+                    cur = json.load(f)
+                lst = ((cur.get("services") or {}).get(service, {}).get(
+                    old_slot, {}).get("bitmaps") or [])
+            except (OSError, ValueError) as e:
+                raise ValueError(f"cannot read program: {e}")
+            for rel in lst:
+                base = os.path.basename(rel)
+                if os.path.dirname(rel) == old_dir and \
+                        base.startswith(old_stem + "-"):
+                    nrel = f"{new_dir}/{new_stem}{base[len(old_stem):]}"
+                    sfull = os.path.join(THIS_DIR, rel)
+                    nfull = os.path.normpath(os.path.join(THIS_DIR, nrel))
+                    if not nfull.startswith(BITMAPS_DIR + os.sep):
+                        raise ValueError("bad image path")
+                    if os.path.isfile(sfull):
+                        if os.path.isfile(nfull):
+                            raise ValueError(
+                                f"refusing to overwrite {nrel}")
+                        plan.append((sfull, nfull, rel, nrel))
+                        continue
+                plan.append((None, None, rel, rel))
+            for sfull, nfull, _old, _new in plan:
+                if sfull is None:
+                    continue
+                os.makedirs(os.path.dirname(nfull), exist_ok=True)
+                os.replace(sfull, nfull)
+            try:
+                os.rmdir(os.path.join(THIS_DIR, old_dir))
+            except OSError:
+                pass
+            return [n for _, _, _, n in plan]
+
+        def _rename_service(self, b):
+            prog = b.get("program")
+            svc = str(b.get("service", "")).strip()
+            new = str(b.get("new_name", "")).strip()
+            if not svc or not new:
+                self._fail("name the service and its new number")
+                return
+            if new == svc:
+                self._ok()
+                return
+
+            def _apply(data):
+                svcs = data.get("services") or {}
+                if svc not in svcs:
+                    raise ValueError(f"no service '{svc}'")
+                if new in svcs:
+                    raise ValueError(f"service '{new}' exists")
+                for dname in list(svcs[svc].keys()):
+                    moved = self._move_pages(prog, svc, dname, dname,
+                                             new_service=new)
+                    svcs[svc][dname]["bitmaps"] = moved
+                items = [(new if k == svc else k, v)
+                         for k, v in svcs.items()]
+                svcs.clear()
+                svcs.update(items)
+                return f"Renamed service {svc} to {new}"
+            try:
+                outer.message = _mutate(prog, _apply)
+            except ValueError as e:
+                self._fail(e)
+                return
+            if outer.service_name == svc:
+                outer.service_name = new
+                outer._save_control()
+            outer.refresh()
+            self._ok()
+
+        def _edit_destination(self, b):
+            prog = b.get("program")
+            svc = str(b.get("service", "")).strip()
+            dest = str(b.get("destination", "")).strip()
+            new = str(b.get("new_name", "")).strip() or dest
+            if not svc or not dest:
+                self._fail("pick a service and destination first")
+                return
+            try:
+                ov = _norm_override(b.get("override") or {})
+            except ValueError as e:
+                self._fail(e)
+                return
+            code = b.get("service_code", None)
+            name = b.get("service_name", None)
+
+            def _apply(data):
+                svcs = data.get("services") or {}
+                if svc not in svcs:
+                    raise ValueError(f"no service '{svc}'")
+                dests = svcs[svc]
+                if dest not in dests:
+                    raise ValueError(f"no destination '{dest}'")
+                e = dests[dest]
+                if new != dest:
+                    if new in dests:
+                        raise ValueError(f"destination '{new}' exists")
+                    e["bitmaps"] = self._move_pages(prog, svc, dest, new)
+                    items = [(new if k == dest else k, v)
+                             for k, v in dests.items()]
+                    dests.clear()
+                    dests.update(items)
+                    e = dests[new]
+                    if e.get("service_name", dest) == dest:
+                        e["service_name"] = new
+                if code not in (None, ""):
+                    e["service_code"] = str(code)
+                if name not in (None, ""):
+                    e["service_name"] = str(name)
+                if isinstance(b.get("override"), dict):
+                    if ov:
+                        e["override"] = ov
+                    else:
+                        e.pop("override", None)
+                return "Saved destination"
+            try:
+                outer.message = _mutate(prog, _apply)
+            except ValueError as e:
+                self._fail(e)
+                return
+            if outer.service_name == svc and outer.dest_name == dest:
+                outer.dest_name = new
+                outer._save_control()
             outer.refresh()
             self._ok()
 

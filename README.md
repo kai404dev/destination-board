@@ -97,10 +97,12 @@ its own region:
   upload a `.dest` file, delete, or download the current one.
 - **Defaults** — colour / rotation / panel size for the program.
 - **Services & destinations** — add services (route numbers) and
-  destinations (auto `service_code` numbering), per-destination colour
-  override (`full` = bitmap colours) and rotation, per-destination
-  `show` (puts it on the board), page filmstrip with per-page delete.
-  Half-built services/destinations (no pages yet) are allowed.
+  destinations (auto `service_code` numbering), rename either (PNG files
+  move with the new names), per-destination editor for slot name,
+  service code/name and the full override (colour, rotation, panel
+  size), per-destination `show` (puts it on the board), page filmstrip
+  with per-page delete. Half-built services/destinations (no pages
+  yet) are allowed.
 - **Create page from text** — type route / destination / via, pick layout,
   colour and BDF fonts (from `fonts/` only, never system fonts);
   `Preview` renders the 240x40 blind, `Create + show` saves the PNG,
