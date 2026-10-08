@@ -63,11 +63,21 @@ python3 board.py programs/example.dest --service 43 --mock --once
 python3 board.py programs/example.dest --service 43 \
     --destination Sheffield --preview
 python3 portal.py                                       # http://localhost:4040
-sudo python3 board.py programs/example.dest --service 43 --portal
+sudo python3 board.py programs/example.dest --service 43 --portal --led-no-drop-privs
 ```
 
 `--serve` hosts the portal without the matrix. The control file steers
 a live matrix within ~0.5s, same process or another one.
+
+Combined matrix+portal runs need `--led-no-drop-privs`: the rgbmatrix
+driver otherwise drops root→`daemon` after hardware init, and the
+portal thread then cannot write programs, bitmaps or
+`board_control.json` (especially under a locked-down home dir such as
+`drwx------ /home/kai`). Alternative split topology: matrix as root
+without `--portal`, plus the portal as your normal user
+(`python portal.py --port 4040` or `board.py --serve`) — both sides
+coordinate through `board_control.json`, so keep the repo owned by
+that user (`sudo chown -R kai:kai /home/kai/destination-board`).
 
 ## Portal
 

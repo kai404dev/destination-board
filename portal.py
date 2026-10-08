@@ -831,6 +831,11 @@ def serve(ctl, port):
                     self._send(b"not found", "text/plain", 404)
             except ValueError as e:
                 self._fail(e)
+            except OSError as e:
+                # e.g. portal running dropped-to-daemon under a locked-down
+                # home dir: report it in the UI instead of dropping the
+                # connection with a traceback.
+                self._fail(f"filesystem error: {e}")
 
         def _defaults(self, b):
             d = b.get("defaults") or {}

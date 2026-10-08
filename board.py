@@ -136,6 +136,14 @@ def run_program(args, prog):
     options.show_refresh_rate = 1 if args.led_show_refresh else 0
     if args.led_no_hardware_pulse:
         options.disable_hardware_pulsing = True
+    if args.led_no_drop_privs:
+        try:
+            options.drop_privileges = False
+        except AttributeError:
+            print("warning: this rgbmatrix build has no drop_privileges "
+                  "option; running split (matrix as root, portal as kai) "
+                  "instead of --led-no-drop-privs",
+                  file=sys.stderr, flush=True)
 
     # Decode + tint every frame BEFORE touching hardware below: the
     # rgbmatrix driver drops root->daemon after init, which loses read
@@ -280,6 +288,11 @@ def main():
     p.add_argument("--led-show-refresh", action="store_true")
     p.add_argument("--led-no-hardware-pulse", action="store_true",
                    default=True)
+    p.add_argument("--led-no-drop-privs", action="store_true",
+                   help="Stay root after hardware init instead of dropping "
+                        "to 'daemon'. Needed for combined matrix+portal runs "
+                        "(--portal) so the portal can write programs, "
+                        "bitmaps and board_control.json.")
     args = p.parse_args()
 
     if not 1 <= args.image_dim <= 100:
