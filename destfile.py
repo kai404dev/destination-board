@@ -8,7 +8,17 @@
             "colour": "#DB9600",
             "rotation_speed": 3,
             "px_width": 240,
-            "px_height": 40
+            "px_height": 40,
+            "text": {
+                "route_font": "10x20.bdf",
+                "route_scale": 2,
+                "dest_font": "10x20.bdf",
+                "dest_scale": 1,
+                "via_font": "6x13B.bdf",
+                "via_scale": 1,
+                "style": "top",
+                "colour": "#DB9600"
+            }
         },
         "services": {
             "<service number>": {
@@ -44,6 +54,9 @@ Rules (kept deliberately close to the reference bus/program.py model):
   `service_name` are free-form labels (shown in the portal, not on
   the LEDs). `bitmaps` is the ordered page list for that destination.
 - Bitmap paths are project-root-relative (`bitmaps/...`).
+- `defaults.text` is the text-creator preset (fonts/scales per role,
+  layout style, render colour) so every new page starts from the
+  house style. All keys optional; missing ones fall back as shown.
 
 This module only reads/validates/resolves - the portal writes files
 through `portal.py` so there is one writer with atomic replace.
@@ -57,6 +70,17 @@ DEFAULT_COLOUR = "#DB9600"
 DEFAULT_ROTATION = 3.0
 DEFAULT_PX_W = 240
 DEFAULT_PX_H = 40
+TEXT_STYLES = ("top", "bottom", "left", "right")
+TEXT_DEFAULTS = {
+    "route_font": "10x20.bdf",
+    "route_scale": 2,
+    "dest_font": "10x20.bdf",
+    "dest_scale": 1,
+    "via_font": "6x13B.bdf",
+    "via_scale": 1,
+    "style": "top",
+    "colour": "#DB9600",
+}
 
 
 def _num(v, fallback):
@@ -128,6 +152,48 @@ def defaults_of(data):
         "px_width": _int(d.get("px_width", DEFAULT_PX_W), DEFAULT_PX_W),
         "px_height": _int(d.get("px_height", DEFAULT_PX_H), DEFAULT_PX_H),
     }
+
+
+def text_defaults_of(data):
+    """Normalised text-creator preset from a loaded .dest document.
+
+    Always complete (missing keys fall back to TEXT_DEFAULTS). Font
+    names are basenamed (no paths); existence in fonts/ is validated
+    by the portal on save, and by the renderer on use.
+    """
+    d = data.get("defaults", {}) if isinstance(data, dict) else {}
+    if not isinstance(d, dict):
+        d = {}
+    t = d.get("text", {})
+    if not isinstance(t, dict):
+        t = {}
+
+    def _scale(v, fb):
+        try:
+            s = int(float(v))
+        except (TypeError, ValueError):
+            return fb
+        return min(4, max(1, s))
+
+    style = str(t.get("style", TEXT_DEFAULTS["style"]) or "").lower()
+    if style not in TEXT_STYLES:
+        style = TEXT_DEFAULTS["style"]
+    try:
+        c = parse_colour(t.get("colour", t.get("color",
+                                               TEXT_DEFAULTS["colour"])),
+                         "defaults.text.colour")
+    except ValueError:
+        c = None
+    if c is None or c == "full":
+        c = parse_colour(TEXT_DEFAULTS["colour"])
+    out = {"style": style, "colour": "#%02x%02x%02x" % c}
+    for role in ("route", "dest", "via"):
+        f = str(t.get(f"{role}_font", "") or "").strip()
+        out[f"{role}_font"] = os.path.basename(f) or \
+            TEXT_DEFAULTS[f"{role}_font"]
+        out[f"{role}_scale"] = _scale(t.get(f"{role}_scale"),
+                                      TEXT_DEFAULTS[f"{role}_scale"])
+    return out
 
 
 def load_dest(path):

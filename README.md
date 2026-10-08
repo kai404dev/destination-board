@@ -98,7 +98,8 @@ its own region:
 
 - **Program** — switch the edited program, create a blank `.dest`,
   upload a `.dest` file, delete, or download the current one.
-- **Defaults** — colour / rotation / panel size for the program.
+- **Defaults** — colour / rotation / panel size for the program, plus
+  text defaults (house fonts/scales, layout, colour for new text pages).
 - **Services & destinations** — add services (route numbers) and
   destinations (auto `service_code` numbering), rename either (PNG files
   move with the new names), per-destination editor for slot name,

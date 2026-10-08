@@ -362,6 +362,8 @@ class Controller:
                 "service": self.service_name,
                 "destination": self.dest_name,
                 "defaults": defaults,
+                "text_defaults": destfile.text_defaults_of(data)
+                if data else destfile.text_defaults_of({}),
                 "services": services,
                 "screens": screens,
                 "fonts": render.available_fonts(),
@@ -408,6 +410,7 @@ class Controller:
                     "rotation_speed": defaults["rotation_speed"],
                     "px_width": defaults["px_width"],
                     "px_height": defaults["px_height"]},
+                "text_defaults": destfile.text_defaults_of(data),
                 "services": services,
                 "screens": [],
                 "fonts": render.available_fonts(),
@@ -1076,7 +1079,19 @@ style="color:#8cf">download .dest</a>
 <button onclick="saveDefaults()">Save defaults</button>
 </div>
 <div class="hint" id="dmsg"><code>full</code> is not allowed here - it is a
-per-destination override meaning "keep bitmap colours".</div></div>
+per-destination override meaning "keep bitmap colours".</div>
+<h2>Text defaults (house style for new pages)</h2>
+<div class="row">
+<label>route font<select id="froute_font"></select></label>
+<label>x<select id="froute_scale"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+<label>dest font<select id="fdest_font"></select></label>
+<label>x<select id="fdest_scale"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+<label>via font<select id="fvia_font"></select></label>
+<label>x<select id="fvia_scale"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+<label>layout<select id="fstyle"><option value="top">top</option><option value="bottom">bottom</option><option value="left">left</option><option value="right">right</option></select></label>
+<label>colour<input id="fcolour" size="8"></label>
+<button onclick="saveTextDefaults()">Save text defaults</button>
+</div></div>
 <div class="card"><h2>Services &amp; destinations</h2>
 <div class="row">
 <input id="nsvc" placeholder="service e.g. 43" size="8">
@@ -1331,6 +1346,40 @@ function fillCtx(){{
  if(!el('usvc').value)el('usvc').value=el('tservice').value;
  if(!el('uslot').value)el('uslot').value=el('tslot').value;
  var dl=el('dl');if(dl)dl.textContent='download '+S.program+'.dest';
+ var td=S.text_defaults||{{}};
+ ['froute_font','fdest_font','fvia_font'].forEach(function(id){{
+  fillFontSel(id,S.fonts||[]);}});
+ applyTextDefaults(td);
+}}
+function fillFontSel(id,fonts,cur){{
+ var s=el(id);if(!s||s.options.length)return;
+ fonts.forEach(function(f){{var o=document.createElement('option');
+  o.value=f;o.textContent=f;if(f===cur)o.selected=true;s.appendChild(o);}});
+ if(cur&&s.value!==cur){{var o=document.createElement('option');
+  o.value=cur;o.textContent=cur+' (missing)';s.appendChild(o);
+  s.value=cur;}}
+}}
+function setSel(id,val){{
+ var s=el(id);if(!s||val===undefined||val===null)return;
+ var v=String(val);
+ var has=false;
+ for(var i=0;i<s.options.length;i++)if(s.options[i].value===v)has=true;
+ if(!has){{var o=document.createElement('option');o.value=v;
+  o.textContent=v+' (missing)';s.appendChild(o);}}
+ s.value=v;
+}}
+function applyTextDefaults(td){{
+ if(!td)return;
+ setSel('froute_font',td.route_font);setSel('froute_scale',td.route_scale);
+ setSel('fdest_font',td.dest_font);setSel('fdest_scale',td.dest_scale);
+ setSel('fvia_font',td.via_font);setSel('fvia_scale',td.via_scale);
+ setSel('fstyle',td.style);
+ if(td.colour)el('fcolour').value=td.colour;
+ setSel('troute_font',td.route_font);setSel('troute_scale',td.route_scale);
+ setSel('tdest_font',td.dest_font);setSel('tdest_scale',td.dest_scale);
+ setSel('tvia_font',td.via_font);setSel('tvia_scale',td.via_scale);
+ setSel('tstyle',td.style);
+ if(td.colour)el('tcolour').value=td.colour;
 }}
 async function switchProgram(){{location='/create?program='+
  encodeURIComponent(el('cprog').value);}}
@@ -1361,6 +1410,17 @@ async function saveDefaults(){{
    px_width:el('dpxw').value,px_height:el('dpxh').value}}}});
  if(!j.ok){{toast('dmsg',j.error||'failed',true);return;}}
  S=j.state;toast('dmsg','saved defaults',false);
+}}
+async function saveTextDefaults(){{
+ var j=await api('/api/text-defaults',{{program:S.program,
+  text:{{route_font:el('froute_font').value,
+   route_scale:el('froute_scale').value,
+   dest_font:el('fdest_font').value,dest_scale:el('fdest_scale').value,
+   via_font:el('fvia_font').value,via_scale:el('fvia_scale').value,
+   style:el('fstyle').value,colour:el('fcolour').value}}}});
+ if(!j.ok){{toast('dmsg',j.error||'failed',true);return;}}
+ S=j.state;applyTextDefaults(S.text_defaults);
+ toast('dmsg','saved text defaults',false);
 }}
 async function addService(){{
  var j=await api('/api/service/add',{{program:S.program,
@@ -1644,6 +1704,8 @@ def serve(ctl, port):
                     self._ok()
                 elif path == "/api/defaults":
                     self._defaults(self._body() or {})
+                elif path == "/api/text-defaults":
+                    self._text_defaults(self._body() or {})
                 elif path == "/api/service/add":
                     b = self._body() or {}
                     svc = str(b.get("service", "")).strip()
@@ -1795,7 +1857,61 @@ def serve(ctl, port):
             outer.refresh()
             self._ok()
 
-        def _dest_upsert(self, b, need_new):
+        def _text_defaults(self, b):
+            """Save the text-creator preset (house style per program)."""
+            t = b.get("text") or {}
+            if not isinstance(t, dict):
+                self._fail("bad text defaults")
+                return
+            avail = render.available_fonts()
+
+            def _apply(data):
+                dd = data.setdefault("defaults", {})
+                cur = destfile.text_defaults_of(data)
+                new = dict(cur)
+                for role in ("route", "dest", "via"):
+                    fk, sk = f"{role}_font", f"{role}_scale"
+                    if fk in t and t[fk] not in (None, ""):
+                        f = os.path.basename(str(t[fk]))
+                        if f not in avail:
+                            raise ValueError(
+                                f"unknown font '{f}' (fonts/ only)")
+                        new[fk] = f
+                    if sk in t and t[sk] not in (None, ""):
+                        try:
+                            s = int(float(t[sk]))
+                        except (TypeError, ValueError):
+                            raise ValueError(f"{sk} must be 1-4")
+                        if s < 1 or s > 4:
+                            raise ValueError(f"{sk} must be 1-4")
+                        new[sk] = s
+                if "style" in t and t["style"] not in (None, ""):
+                    st = str(t["style"]).lower()
+                    if st not in destfile.TEXT_STYLES:
+                        raise ValueError(
+                            f"style must be one of "
+                            f"{destfile.TEXT_STYLES}")
+                    new["style"] = st
+                if "colour" in t or "color" in t:
+                    try:
+                        c = destfile.parse_colour(
+                            t.get("colour", t.get("color")), "colour")
+                    except ValueError:
+                        raise ValueError("colour must be #rrggbb")
+                    if c is None or c == "full":
+                        raise ValueError(
+                            "text needs a single colour, e.g. #DB9600")
+                    new["colour"] = "#%02x%02x%02x" % c
+                if new != cur:
+                    dd["text"] = new
+                return "Saved text defaults"
+            try:
+                outer.message = _mutate(b.get("program"), _apply)
+            except ValueError as e:
+                self._fail(e)
+                return
+            outer.refresh()
+            self._ok()
             svc = str(b.get("service", "")).strip()
             dest = str(b.get("destination", "")).strip()
             if not svc or not dest:
