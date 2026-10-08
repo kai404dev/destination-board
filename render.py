@@ -14,8 +14,10 @@ Job shape (all keys optional except at least one of route/dest):
      "via_font": "6x13B.bdf",
      "route_scale": 2, "dest_scale": 1, "via_scale": 1,
      "fg": "#DB9600",                      # single #rrggbb colour
-     "upper_dest": True, "via_prefix": True,
      "gap": 4, "pad": 1}
+
+Text is literal: no case changes, no "via " prefix. Type capitals and
+prefixes yourself if you want them.
 
 Layouts (route number is the tall block on the right):
   top      via over dest, stacked on the left
@@ -42,9 +44,6 @@ DEFAULTS = {
     "dest_scale": 1,
     "via_scale": 1,
     "fg": "#DB9600",
-    "upper_dest": True,
-    "upper_route": False,
-    "via_prefix": True,
     "gap": 4,
     "pad": 1,
     "via_fraction": 0.5,
@@ -262,23 +261,14 @@ def colour_hex(rgb):
 # ---------------------------------------------------------------------------
 
 def normalize(job):
+    """Literal text rules: strip edge whitespace, nothing else.
+
+    No case changes, no "via " prefix - type exactly what should light
+    up, including capitals and prefixes.
+    """
     route = str(job.get("route", "") or "")
     dest = str(job.get("dest", job.get("destination", "")) or "")
     via = str(job.get("via", "") or "")
-    if job.get("upper_route", DEFAULTS["upper_route"]):
-        route = route.upper()
-    if job.get("upper_dest", DEFAULTS["upper_dest"]):
-        dest = dest.upper()
-    if job.get("upper_via", False):
-        via = via.upper()
-    prefix = job.get("via_prefix", DEFAULTS["via_prefix"])
-    if prefix in (True, "true", "1", 1):
-        prefix = True
-    elif prefix in (False, "false", "0", 0, ""):
-        prefix = False
-    via = via.strip()
-    if via and prefix and not via.lower().startswith("via "):
-        via = "via " + via
     return route.strip(), dest.strip(), via.strip()
 
 
