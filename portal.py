@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """Web portal for the destination board (stdlib only).
 
+Two pages, never wiping your inputs:
+
+- `/` (Board) - pick program / service / destination and show it on
+  the board. Only the status line and filmstrip refresh live; the
+  form is never rewritten.
+- `/create` (Create) - programs (.dest create/upload/delete/download),
+  defaults, services, destinations + overrides, bitmap upload, and
+  create-a-page-from-text (BDF fonts from fonts/ only). Every action
+  updates just its own region - no page reloads except explicit
+  program switches.
+
 - Create new `.dest` programs, or upload an existing `.dest` file.
 - Edit defaults (colour, rotation speed, panel size).
 - Add/remove services (route numbers) and destinations, edit
@@ -21,6 +32,7 @@ Run from the project root.
 
 import argparse
 import base64
+import html
 import json
 import os
 import re
@@ -88,7 +100,12 @@ def _write_json_validated(path, data):
 
 
 def _mutate(program, fn):
-    """Load a program, apply fn(data) -> message, save. Returns message."""
+    """Load a program, apply fn(data) -> message, save. Returns message.
+
+    When fn leaves the data unchanged the file is left alone, so
+    no-op saves never cause cosmetic rewrites (3 -> 3.0, key order,
+    colour case).
+    """
     path = _dest_path(program)
     if not os.path.isfile(path):
         raise ValueError(f"no program '{program}'")
@@ -97,7 +114,10 @@ def _mutate(program, fn):
             data = json.load(f)
     except (OSError, ValueError) as e:
         raise ValueError(f"cannot read program: {e}")
+    before = json.dumps(data, sort_keys=True)
     msg = fn(data)
+    if json.dumps(data, sort_keys=True) == before:
+        return msg
     _write_json_validated(path, data)
     return msg
 
@@ -335,6 +355,49 @@ class Controller:
                 "message": self.message,
             }
 
+    def snapshot_for(self, program):
+        """Snapshot dict for any program (create page context).
+
+        Never touches the live selection - browsing programs here does
+        not retune the board. Returns None for unknown/unreadable
+        programs.
+        """
+        with self.lock:
+            if program not in _programs():
+                return None
+            try:
+                data = destfile.load_dest(_dest_path(program))
+            except (OSError, ValueError, SystemExit):
+                return None
+            defaults = destfile.defaults_of(data)
+            services = []
+            for s in destfile.list_services(data):
+                ds = []
+                for d in destfile.list_destinations(data, s):
+                    e = destfile.entry_of(data, s, d) or {}
+                    ds.append({"name": d,
+                               "service_code": e.get("service_code", ""),
+                               "service_name": e.get("service_name", d),
+                               "override": e.get("override") or {},
+                               "bitmaps": list(e.get("bitmaps") or [])})
+                services.append({"number": s, "destinations": ds})
+            same = (program == self.program_name)
+            return {
+                "programs": _programs(),
+                "program": program,
+                "service": self.service_name if same else None,
+                "destination": self.dest_name if same else None,
+                "defaults": {
+                    "colour": destfile.colour_str(defaults["colour"]),
+                    "rotation_speed": defaults["rotation_speed"],
+                    "px_width": defaults["px_width"],
+                    "px_height": defaults["px_height"]},
+                "services": services,
+                "screens": [],
+                "fonts": render.available_fonts(),
+                "message": "",
+            }
+
     # -- program management --------------------------------------------
     def create_program(self, name):
         name = re.sub(r"[^a-zA-Z0-9._-]", "-",
@@ -559,12 +622,7 @@ class Controller:
 # HTTP
 # ---------------------------------------------------------------------------
 
-PAGE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Destination board</title>
-<style>
-*{box-sizing:border-box}
+STYLE = """*{box-sizing:border-box}
 body{background:#0d0d10;color:#ddd;font-family:Arial,Helvetica,sans-serif;
 margin:0;padding:20px;display:flex;flex-direction:column;align-items:center;
 gap:14px;min-height:100vh}
@@ -579,7 +637,6 @@ border-radius:6px;padding:6px 8px;font-size:13px}
 button{background:#1d5c2e;border-color:#1d5c2e;cursor:pointer}
 button.ghost{background:#1d3a4c;border-color:#1d3a4c}
 button.danger{background:#6e1b1b;border-color:#6e1b1b}
-button:disabled{opacity:.5;cursor:default}
 .hint{color:#888;font-size:12px}
 .ok{color:#6f6}.err{color:#f66}
 .showing{font-size:15px}
@@ -592,33 +649,171 @@ vertical-align:top}
 .strip img{width:180px;height:30px;object-fit:contain;background:#000;
 border-radius:4px;border:1px solid #3a3a42;image-rendering:pixelated}
 .strip figcaption{font-size:11px;color:#888;margin-top:2px}
-.strip button{font-size:11px;padding:2px 8px;margin-top:2px}
 code{background:#000;padding:1px 5px;border-radius:4px;color:#ffb000}
 label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:#aaa}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.tabs{display:flex;gap:8px}
+.tabs a{background:#1b1b21;color:#9a9aa2;border:1px solid #34343e;
+border-radius:8px;padding:8px 22px;font-size:15px;text-decoration:none}
+.tabs a.on{background:#1d3a4c;color:#fff;border-color:#1d3a4c}
 @media(max-width:640px){.grid{grid-template-columns:1fr}}
-</style></head><body>
-<h1>Destination board</h1>
-<div class="wrap">
-<div class="card"><h2>Now showing (board follows)</h2>
-<div class="row">
-<select id="sprog"></select><select id="ssvc"></select>
-<select id="sdest"></select>
-<button onclick="show()">Show on board</button>
+"""
+
+
+def _esc(s):
+    return html.escape(str(s if s is not None else ""), quote=True)
+
+
+def _sel(name, items, cur, all_label=None, extra=""):
+    out = [f'<select name="{_esc(name)}" id="{_esc(extra or name)}">']
+    if all_label is not None:
+        out.append(f'<option value="">{_esc(all_label)}</option>')
+    for v in items:
+        sel = " selected" if v == cur else ""
+        out.append(f'<option value="{_esc(v)}"{sel}>{_esc(v)}</option>')
+    out.append("</select>")
+    return "".join(out)
+
+
+def _program_map():
+    """{program: {service: [destinations]}} for every loadable .dest."""
+    pmap = {}
+    for name in _programs():
+        try:
+            with open(_dest_path(name)) as f:
+                data = json.load(f)
+            destfile.load_dest(_dest_path(name))
+        except (OSError, ValueError, SystemExit):
+            continue
+        pmap[name] = {s: destfile.list_destinations(data, s)
+                      for s in destfile.list_services(data)}
+    return pmap
+
+
+def _shell(title, active, body):
+    t1 = ' class="on"' if active == "board" else ""
+    t2 = ' class="on"' if active == "create" else ""
+    return ("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,"
+            " initial-scale=1\">"
+            f"<title>{_esc(title)}</title>"
+            f"<style>{STYLE}</style></head><body><h1>Destination board</h1>"
+            f"<div class=\"tabs\"><a href=\"/\"{t1}>Board</a>"
+            f"<a href=\"/create\"{t2}>Create</a></div>"
+            f"<div class=\"wrap\">{body}</div></body></html>")
+
+
+def board_html(snap, pmap):
+    prog = snap["program"]
+    svc = snap["service"]
+    dst = snap["destination"]
+    svcs = list((pmap.get(prog) or {}).keys())
+    dests = (pmap.get(prog) or {}).get(svc, []) if svc else []
+    now = (f"{prog or '-'} / {svc or 'all'} / {dst or 'all'} "
+           f"({len(snap['screens'])} pages)")
+    strip = "".join(
+        f"<figure><img src=\"/api/img?path={urllib.parse.quote(s['image'])}\""
+        f" title=\"{_esc(s['image'])}\" loading=\"lazy\">"
+        f"<figcaption>{_esc(s['service'])} / {_esc(s['destination'])}"
+        f"</figcaption></figure>" for s in snap["screens"])
+    map_json = json.dumps(pmap).replace("<", "\\u003c")
+    sig_json = json.dumps("|".join(
+        [prog or "", svc or "", dst or ""] +
+        [s["image"] for s in snap["screens"]])).replace("<", "\\u003c")
+    body = f"""<div class="card"><h2>Now showing</h2>
+<div class="showing">board: <b id="now">{_esc(now)}</b></div>
+<form method="post" action="/show"><div class="row">
+{_sel("program", snap["programs"], prog)}
+{_sel("service", svcs, svc, "all services")}
+{_sel("destination", dests, dst, "all destinations")}
+<button type="submit">Show on board</button>
+</div></form>
+<div class="hint">The line above follows the board live. This form is never
+rewritten - pick and press Show.</div></div>
+<div class="card"><h2>Screens</h2><div class="strip" id="strip">{strip}</div>
 </div>
-<div class="showing" id="showing"></div>
-<div class="hint" id="msg"></div></div>
-<div class="card"><h2>Programs (.dest)</h2>
+<script>
+var MAP={map_json};
+var lastSig={sig_json};
+var prog=document.getElementsByName('program')[0];
+var svc=document.getElementsByName('service')[0];
+var dst=document.getElementsByName('destination')[0];
+function fill(sel, items, cur, allLabel){{
+ var keep=false;
+ sel.innerHTML='';
+ if(allLabel){{var o=document.createElement('option');o.value='';
+  o.textContent=allLabel;sel.appendChild(o);}}
+ items.forEach(function(v){{var o=document.createElement('option');
+  o.value=v;o.textContent=v;if(v===cur){{o.selected=true;keep=true;}}
+  sel.appendChild(o);}});
+ if(!keep&&allLabel)sel.value='';
+}}
+prog.addEventListener('change',function(){{
+ var m=MAP[prog.value]||{{}};
+ fill(svc,Object.keys(m),'','all services');
+ fill(dst,[],'','all destinations');
+}});
+svc.addEventListener('change',function(){{
+ var m=MAP[prog.value]||{{}};
+ fill(dst,m[svc.value]||[],'','all destinations');
+}});
+async function tick(){{
+ try{{
+  var r=await fetch('/api/state');var j=await r.json();
+  if(!j.ok)return;
+  var s=j.state;
+  document.getElementById('now').textContent=
+   (s.program||'-')+' / '+(s.service||'all')+' / '+
+   (s.destination||'all')+' ('+s.screens.length+' pages)';
+  var sig=[s.program||'',s.service||'',s.destination||'']
+   .concat(s.screens.map(function(x){{return x.image;}})).join('|');
+  if(sig===lastSig)return;
+  lastSig=sig;
+  var st=document.getElementById('strip');st.innerHTML='';
+  s.screens.forEach(function(x){{
+   var f=document.createElement('figure');
+   var im=document.createElement('img');
+   im.src='/api/img?path='+encodeURIComponent(x.image);
+   im.title=x.image;im.loading='lazy';
+   var c=document.createElement('figcaption');
+   c.textContent=x.service+' / '+x.destination;
+   f.appendChild(im);f.appendChild(c);st.appendChild(f);
+  }});
+ }}catch(e){{}}
+}}
+setInterval(tick,3000);
+</script>"""
+    return _shell("Board", "board", body)
+
+
+def create_html(snap, program, fonts):
+    if program not in snap["programs"]:
+        program = snap["program"]
+    data_json = json.dumps(snap).replace("<", "\\u003c")
+    font_opts = "".join(f"<option>{_esc(f)}</option>" for f in fonts)
+
+    def _fontsel(fid, default):
+        opts = []
+        for f in fonts:
+            sel = " selected" if f == default else ""
+            opts.append(f"<option{sel}>{_esc(f)}</option>")
+        return f"<select id=\"{fid}\">{''.join(opts)}</select>"
+
+    body = f"""<div class="card"><h2>Program</h2>
 <div class="row">
+{_sel("cprog", snap["programs"], program)}
+<button class="ghost" onclick="switchProgram()">Edit</button>
 <input id="newname" placeholder="new program e.g. citybus" size="18">
 <button onclick="createProgram()">Create</button>
-<input type="file" id="destfile" accept=".dest,.json,application/json">
-<button class="ghost" onclick="uploadProgram()">Upload .dest</button>
 <button class="danger" onclick="deleteProgram()">Delete</button>
 </div>
-<div class="hint">Programs live in <code>programs/*.dest</code>, bitmaps in
-<code>bitmaps/&lt;program&gt;/&lt;route&gt;/&lt;route&gt;-&lt;destination&gt;-&lt;page&gt;.png</code>.
-<a id="dl" href="#" style="color:#8cf">download this .dest</a></div></div>
+<div class="row">
+<input type="file" id="destfile" accept=".dest,.json,application/json">
+<button class="ghost" onclick="uploadProgram()">Upload .dest</button>
+<a id="dl" href="/api/destfile?program={urllib.parse.quote(program or '')}"
+style="color:#8cf">download .dest</a>
+</div>
+<div class="hint" id="pmsg"></div></div>
 <div class="card"><h2>Defaults</h2>
 <div class="row">
 <label>colour<input id="dcolour" size="8"></label>
@@ -627,206 +822,245 @@ label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:#aaa}
 <label>px height<input id="dpxh" size="5"></label>
 <button onclick="saveDefaults()">Save defaults</button>
 </div>
-<div class="hint">colour <code>#rrggbb</code> tints every page unless a
-destination overrides it with <code>full</code> (keep bitmap colours).</div></div>
+<div class="hint" id="dmsg"><code>full</code> is not allowed here - it is a
+per-destination override meaning "keep bitmap colours".</div></div>
 <div class="card"><h2>Services &amp; destinations</h2>
 <div class="row">
 <input id="nsvc" placeholder="service e.g. 43" size="8">
 <button class="ghost" onclick="addService()">Add service</button>
 <input id="ndest" placeholder="destination e.g. Sheffield" size="14">
 <input id="ncode" placeholder="code e.g. 001" size="7">
-<input id="nname" placeholder="service name" size="14">
 <button class="ghost" onclick="addDestination()">Add destination</button>
 </div>
-<div id="svcs"></div></div>
-<div class="card"><h2>Upload bitmap page</h2>
-<div class="row">
-<input type="file" id="upfile" accept=".png,image/png">
-<button onclick="uploadBitmap()">Upload + append page</button>
-</div>
-<div class="hint" id="upmsg">PNG only (ideally 240x40). Saved as
-<code>&lt;route&gt;-&lt;destination&gt;-&lt;next-page&gt;.png</code> and
-appended to the destination in order.</div></div>
+<div id="svcs"></div>
+<div class="hint" id="smsg"></div></div>
 <div class="card"><h2>Create page from text (fonts/ only)</h2>
 <div class="grid">
-<label>service (route no.)<input id="tservice" placeholder="e.g. 43"></label>
-<label>destination slot<input id="tslot" placeholder="e.g. Sheffield"></label>
-<label>route text<input id="troute" placeholder="e.g. 43"></label>
-<label>destination text<input id="ttext" placeholder="e.g. Sheffield"></label>
-<label>via (optional)<input id="tvia" placeholder="e.g. Dronfield"></label>
+<label>service (route no.)<input id="tservice"></label>
+<label>destination slot<input id="tslot"></label>
+<label>route text<input id="troute"></label>
+<label>destination text<input id="ttext"></label>
+<label>via (optional)<input id="tvia"></label>
 <label>layout<select id="tstyle"><option value="top">top - via over dest</option><option value="bottom">bottom - dest over via</option><option value="left">left - via | dest</option><option value="right">right - dest | via</option></select></label>
 <label>colour<input id="tcolour" value="#DB9600"></label>
 <label>rotation secs (optional)<input id="trot" placeholder="default"></label>
-<label>route font<select id="troute_font"></select></label>
+<label>route font{_fontsel("troute_font", "10x20.bdf")}</label>
 <label>route scale<select id="troute_scale"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
-<label>dest font<select id="tdest_font"></select></label>
+<label>dest font{_fontsel("tdest_font", "10x20.bdf")}</label>
 <label>dest scale<select id="tdest_scale"><option selected>1</option><option>2</option><option>3</option><option>4</option></select></label>
-<label>via font<select id="tvia_font"></select></label>
+<label>via font{_fontsel("tvia_font", "6x13B.bdf")}</label>
 <label>via scale<select id="tvia_scale"><option selected>1</option><option>2</option><option>3</option><option>4</option></select></label>
 </div>
 <div class="row"><button class="ghost" onclick="previewText()">Preview</button>
 <button onclick="createText()">Create + show on board</button></div>
 <img id="tpreview" alt="preview" style="width:100%;max-width:480px;height:80px;object-fit:contain;background:#000;border-radius:6px;border:1px solid #3a3a42;display:none;image-rendering:pixelated;margin-top:8px">
 <div class="hint" id="tmsg">Rendered with BDF bitmap fonts from
-<code>fonts/</code> only - no system fonts. Saved as the next page of the
-slot and shown on the board.</div></div>
+<code>fonts/</code> only - no system fonts. This card never reloads.</div>
+</div>
+<div class="card"><h2>Upload bitmap page</h2>
+<div class="row">
+<input id="usvc" placeholder="service" size="8">
+<input id="uslot" placeholder="destination" size="14">
+<input type="file" id="upfile" accept=".png,image/png">
+<button onclick="uploadBitmap()">Upload + append page</button>
+</div>
+<div class="hint" id="upmsg">PNG only (ideally 240x40). Saved as
+<code>&lt;route&gt;-&lt;destination&gt;-&lt;next-page&gt;.png</code>.</div>
 </div>
 <script>
-var S=null;
-function el(id){return document.getElementById(id);}
-async function api(path,body){
- var r=await fetch(path,{method:body===undefined?'GET':'POST',
-  headers:{'Content-Type':'application/json'},
-  body:body===undefined?undefined:JSON.stringify(body)});
+var S={data_json};
+function el(id){{return document.getElementById(id);}}
+function esc(s){{return String(s===null||s===undefined?'':s).replace(
+ /[&<>"]/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;',
+ '"':'&quot;'}}[c];}});}}
+function toast(id,msg,err){{var m=el(id);m.textContent=msg;
+ m.className=err?'err':'ok';}}
+async function api(path,body){{
+ var r=await fetch(path,{{method:'POST',
+  headers:{{'Content-Type':'application/json'}},
+  body:JSON.stringify(body)}});
  var j=await r.json();
- if(!j.ok){el('msg').textContent=j.error||'failed';
-  el('msg').className='err';return null;}
  return j;
-}
-function opts(sel,items,cur,allLabel){
- var s=el(sel);s.innerHTML='';
- if(allLabel){var o=document.createElement('option');o.value='';
-  o.textContent=allLabel;s.appendChild(o);}
- items.forEach(function(v){var o=document.createElement('option');
-  o.value=v;o.textContent=v;if(v===cur)o.selected=true;s.appendChild(o);});
-}
-function render(){
- if(!S)return;
- opts('sprog',S.programs,S.program);
- var svc=S.services.find(function(x){return x.number===S.service;});
- var svcs=S.services.map(function(x){return x.number;});
- opts('ssvc',svcs,S.service,'all services');
- var dests=svc?svc.destinations.map(function(d){return d.name;}):[];
- opts('sdest',dests,S.destination,'all destinations');
- el('showing').innerHTML='board: <b>'+esc(S.program||'-')+' / '+
-  esc(S.service||'all')+' / '+esc(S.destination||'all')+'</b> ('+
-  S.screens.length+' pages)';
- el('msg').textContent=S.message||'';el('msg').className='';
- if(S.defaults){el('dcolour').value=S.defaults.colour;
-  el('drot').value=S.defaults.rotation_speed;
-  el('dpxw').value=S.defaults.px_width;el('dpxh').value=S.defaults.px_height;}
- el('dl').href='/api/destfile?program='+encodeURIComponent(S.program||'');
+}}
+function renderSvcs(){{
  var box=el('svcs');box.innerHTML='';
- S.services.forEach(function(sv){
-  var h=document.createElement('h2');
-  h.textContent='Service '+sv.number+' ';
+ (S.services||[]).forEach(function(sv){{
+  var h=document.createElement('h2');h.textContent='Service '+sv.number+' ';
   var del=document.createElement('button');del.textContent='delete service';
-  del.className='danger';
-  del.onclick=function(){call('/api/service/delete',
-   {program:S.program,service:sv.number});};
-  h.appendChild(del);box.appendChild(h);
-  sv.destinations.forEach(function(d){
-   var t=document.createElement('table');t.innerHTML='';
-   var tr=document.createElement('tr');
-   tr.innerHTML='<td><b>'+esc(d.name)+'</b><br><span class="hint">code '+
-    esc(d.service_code||'-')+' / '+esc(d.service_name||d.name)+'</span></td>'+
-    '<td>colour <input data-k="colour" value="'+esc(d.override.colour||'')+
-    '" placeholder="default" size="8"><br>'+
-    '<span class="hint">use <code>full</code> for bitmap colours</span></td>'+
-    '<td>rotation <input data-k="rotation_speed" value="'+
-    esc(d.override.rotation_speed??'')+'" placeholder="default" size="5"></td>'+
-    '<td><button>save</button> <button class="danger">delete</button></td>';
-   var inputs=tr.querySelectorAll('input');
-   tr.querySelectorAll('button')[0].onclick=function(){
-    var ov={};inputs.forEach(function(i){ov[i.dataset.k]=i.value;});
-    call('/api/destination/update',{program:S.program,service:sv.number,
-     destination:d.name,override:ov});};
-   tr.querySelectorAll('button')[1].onclick=function(){
-    if(confirm('Delete '+d.name+'?'))
-     call('/api/destination/delete',{program:S.program,service:sv.number,
-      destination:d.name});};
-   box.appendChild(tr);
+  del.className='danger';del.setAttribute('data-act','del-svc');
+  del.setAttribute('data-svc',sv.number);h.appendChild(del);
+  box.appendChild(h);
+  sv.destinations.forEach(function(d){{
+   var t=document.createElement('div');t.className='row';
+   t.innerHTML='<b>'+esc(d.name)+'</b><span class="hint">code '+
+    esc(d.service_code||'-')+'</span>'+
+    '<label>colour<input size="8" data-f="colour" value="'+
+    esc(d.override.colour||'')+'" placeholder="default"></label>'+
+    '<label>rotation<input size="5" data-f="rotation_speed" value="'+
+    esc(d.override.rotation_speed===undefined?'':d.override.rotation_speed)+
+    '" placeholder="default"></label>'+
+    '<button data-act="save-ov">save</button>'+
+    '<button data-act="show-dest">show</button>'+
+    '<button class="danger" data-act="del-dest">delete</button>';
+   t.setAttribute('data-svc',sv.number);t.setAttribute('data-dest',d.name);
+   box.appendChild(t);
    var strip=document.createElement('div');strip.className='strip';
-   d.bitmaps.forEach(function(img,i){
+   (d.bitmaps||[]).forEach(function(img,i){{
     var f=document.createElement('figure');
     var im=document.createElement('img');
-    im.src='/api/img?path='+encodeURIComponent(img)+'&t='+Date.now();
+    im.src='/api/img?path='+encodeURIComponent(img);
     im.title=img;im.loading='lazy';
-    var cap=document.createElement('figcaption');cap.textContent='page '+(i+1);
+    var cap=document.createElement('figcaption');
+    cap.textContent='page '+(i+1);
     var b=document.createElement('button');b.textContent='delete';
-    b.className='danger';
-    b.onclick=function(){if(confirm('Delete page '+(i+1)+'?'))
-     call('/api/bitmap/delete',{program:S.program,service:sv.number,
-      destination:d.name,image:img});};
+    b.className='danger';b.setAttribute('data-act','del-page');
+    b.setAttribute('data-svc',sv.number);b.setAttribute('data-dest',d.name);
+    b.setAttribute('data-img',img);
     f.appendChild(im);f.appendChild(cap);f.appendChild(b);
-    strip.appendChild(f);});
-   if(!d.bitmaps.length){var p=document.createElement('div');
-    p.className='hint';p.textContent='no pages yet - upload a PNG below.';
-    strip.appendChild(p);}
-   box.appendChild(strip);});
-  });
- fillFonts();
-}
-function esc(s){return String(s??'').replace(/[&<>"]/g,function(c){
- return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
-async function call(path,body){var j=await api(path,body);
- if(j){S=j.state;render();}}
-async function poll(){var j=await api('/api/state');if(j){S=j.state;render();}}
-async function show(){await call('/api/show',{program:el('sprog').value,
- service:el('ssvc').value||null,destination:el('sdest').value||null});}
-async function createProgram(){await call('/api/program/create',
- {name:el('newname').value});}
-async function deleteProgram(){if(confirm('Delete program?'))
- await call('/api/program/delete',{program:el('sprog').value});}
-async function uploadProgram(){var f=el('destfile').files[0];
- if(!f){el('msg').textContent='pick a .dest file first';
-  el('msg').className='err';return;}
+    strip.appendChild(f);}});
+   if(!(d.bitmaps||[]).length){{var p=document.createElement('div');
+    p.className='hint';p.textContent='no pages yet.';strip.appendChild(p);}}
+   box.appendChild(strip);
+  }});
+ }});
+}}
+el('svcs').addEventListener('click',async function(e){{
+ var b=e.target.closest('button');if(!b)return;
+ var row=e.target.closest('[data-svc]');if(!row)return;
+ var svc=row.getAttribute('data-svc');
+ var dest=row.getAttribute('data-dest');
+ var act=b.getAttribute('data-act');
+ var j=null;
+ if(act==='del-svc'){{
+  if(!confirm('Delete service '+svc+'?'))return;
+  j=await api('/api/service/delete',{{program:S.program,service:svc}});
+ }}else if(act==='del-dest'){{
+  if(!confirm('Delete '+dest+'?'))return;
+  j=await api('/api/destination/delete',{{program:S.program,
+   service:svc,destination:dest}});
+ }}else if(act==='save-ov'){{
+  var ov={{}};
+  row.querySelectorAll('input[data-f]').forEach(function(i){{
+   ov[i.getAttribute('data-f')]=i.value;}});
+  j=await api('/api/destination/update',{{program:S.program,
+   service:svc,destination:dest,override:ov}});
+ }}else if(act==='show-dest'){{
+  j=await api('/api/show',{{program:S.program,service:svc,
+   destination:dest}});
+ }}else if(act==='del-page'){{
+  if(!confirm('Delete this page?'))return;
+  j=await api('/api/bitmap/delete',{{program:S.program,service:svc,
+   destination:dest,image:b.getAttribute('data-img')}});
+ }}else return;
+ if(!j)return;
+ if(!j.ok){{toast('smsg',j.error||'failed',true);return;}}
+ S=j.state;renderSvcs();toast('smsg','saved',false);
+}});
+function ctxSvc(){{var s=S.services||[];
+ for(var i=0;i<s.length;i++)if(s[i].number===S.service)return s[i];
+ return s[0];}}
+function fillCtx(){{
+ if(S.defaults){{el('dcolour').value=S.defaults.colour;
+  el('drot').value=S.defaults.rotation_speed;
+  el('dpxw').value=S.defaults.px_width;
+  el('dpxh').value=S.defaults.px_height;}}
+ var c=ctxSvc();var d=c&&c.destinations[0];
+ if(!el('tservice').value)el('tservice').value=S.service||(c&&c.number)||'';
+ if(!el('tslot').value)el('tslot').value=S.destination||(d&&d.name)||'';
+ if(!el('troute').value)el('troute').value=S.service||(c&&c.number)||'';
+ if(!el('ttext').value)el('ttext').value=S.destination||(d&&d.name)||'';
+ if(!el('usvc').value)el('usvc').value=el('tservice').value;
+ if(!el('uslot').value)el('uslot').value=el('tslot').value;
+ var dl=el('dl');if(dl)dl.textContent='download '+S.program+'.dest';
+}}
+async function switchProgram(){{location='/create?program='+
+ encodeURIComponent(el('cprog').value);}}
+async function createProgram(){{
+ var j=await api('/api/program/create',{{name:el('newname').value}});
+ if(!j.ok){{toast('pmsg',j.error||'failed',true);return;}}
+ location='/create?program='+encodeURIComponent(
+  (j.state&&j.state.program)||el('newname').value);
+}}
+async function deleteProgram(){{
+ if(!confirm('Delete program '+S.program+'?'))return;
+ var j=await api('/api/program/delete',{{program:S.program}});
+ if(!j.ok){{toast('pmsg',j.error||'failed',true);return;}}
+ location='/create';
+}}
+async function uploadProgram(){{
+ var f=el('destfile').files[0];
+ if(!f){{toast('pmsg','pick a .dest file first',true);return;}}
  var text=await f.text();
- var name=f.name.replace(/\\.dest$/i,'');
- await call('/api/program/upload',{name:name,text:text});}
-async function saveDefaults(){await call('/api/defaults',
- {program:S.program,defaults:{colour:el('dcolour').value,
-  rotation_speed:el('drot').value,px_width:el('dpxw').value,
-  px_height:el('dpxh').value}});}
-async function addService(){await call('/api/service/add',
- {program:S.program,service:el('nsvc').value});}
-async function addDestination(){await call('/api/destination/add',
- {program:S.program,service:S.service||el('nsvc').value,
-  destination:el('ndest').value,service_code:el('ncode').value,
-  service_name:el('nname').value});}
-async function uploadBitmap(){var f=el('upfile').files[0];
- if(!f){el('upmsg').textContent='pick a PNG file first';return;}
- el('upmsg').textContent='uploading...';
- var rd=new FileReader();
- rd.onload=async function(){
-  var j=await api('/api/bitmap/upload',{program:S.program,
-   service:S.service,destination:S.destination,filename:f.name,data:rd.result});
-  if(j){S=j.state;render();el('upmsg').textContent='saved - on screen now';}};
-  rd.readAsDataURL(f);}
-function textForm(){return {program:S.program,service:el('tservice').value,
- slot:el('tslot').value,route:el('troute').value,text:el('ttext').value,
- via:el('tvia').value,style:el('tstyle').value,
- colour:el('tcolour').value||'#DB9600',rotation:el('trot').value,
- fonts:{route:el('troute_font').value,route_scale:el('troute_scale').value,
-  dest:el('tdest_font').value,dest_scale:el('tdest_scale').value,
-  via:el('tvia_font').value,via_scale:el('tvia_scale').value}};}
-async function previewText(){var m=el('tmsg');m.textContent='rendering...';
- var r=await fetch('/api/render-preview',{method:'POST',
-  headers:{'Content-Type':'application/json'},body:JSON.stringify(textForm())});
+ var j=await api('/api/program/upload',{{name:f.name.replace(/\\.dest$/i,''),
+  text:text}});
+ if(!j.ok){{toast('pmsg',j.error||'failed',true);return;}}
+ location='/create?program='+encodeURIComponent(j.state.program);
+}}
+async function saveDefaults(){{
+ var j=await api('/api/defaults',{{program:S.program,
+  defaults:{{colour:el('dcolour').value,rotation_speed:el('drot').value,
+   px_width:el('dpxw').value,px_height:el('dpxh').value}}}});
+ if(!j.ok){{toast('dmsg',j.error||'failed',true);return;}}
+ S=j.state;toast('dmsg','saved defaults',false);
+}}
+async function addService(){{
+ var j=await api('/api/service/add',{{program:S.program,
+  service:el('nsvc').value}});
+ if(!j.ok){{toast('smsg',j.error||'failed',true);return;}}
+ S=j.state;renderSvcs();el('nsvc').value='';toast('smsg','saved',false);
+}}
+async function addDestination(){{
+ var svc=S.service||el('nsvc').value;
+ var j=await api('/api/destination/add',{{program:S.program,service:svc,
+  destination:el('ndest').value,service_code:el('ncode').value}});
+ if(!j.ok){{toast('smsg',j.error||'failed',true);return;}}
+ S=j.state;renderSvcs();el('ndest').value='';toast('smsg','saved',false);
+}}
+function textForm(){{return {{program:S.program,
+ service:el('tservice').value,slot:el('tslot').value,
+ route:el('troute').value,text:el('ttext').value,via:el('tvia').value,
+ style:el('tstyle').value,colour:el('tcolour').value||'#DB9600',
+ rotation:el('trot').value,
+ fonts:{{route:el('troute_font').value,
+  route_scale:el('troute_scale').value,dest:el('tdest_font').value,
+  dest_scale:el('tdest_scale').value,via:el('tvia_font').value,
+  via_scale:el('tvia_scale').value}}}};}}
+async function previewText(){{
+ toast('tmsg','rendering...',false);
+ var r=await fetch('/api/render-preview',{{method:'POST',
+  headers:{{'Content-Type':'application/json'}},
+  body:JSON.stringify(textForm())}});
  var j=await r.json();
- if(!j.ok){m.textContent=j.error||'preview failed';return;}
+ if(!j.ok){{toast('tmsg',j.error||'preview failed',true);return;}}
  var im=el('tpreview');im.src=j.data;im.style.display='block';
- m.textContent=j.lit+' lit pixels'+(j.warnings.length?' - '+j.warnings.join('; '):'');}
-async function createText(){var m=el('tmsg');m.textContent='creating...';
+ toast('tmsg',j.lit+' lit pixels'+(j.warnings.length?' - '+
+  j.warnings.join('; '):''),false);
+}}
+async function createText(){{
+ toast('tmsg','creating...',false);
  var j=await api('/api/create-text',textForm());
- if(j){S=j.state;render();m.textContent='saved - on screen now';}}
-function fillFonts(){var fonts=S.fonts||[];
- [['troute_font','10x20.bdf'],['tdest_font','10x20.bdf'],
-  ['tvia_font','6x13B.bdf']].forEach(function(p){
-  var s=el(p[0]);if(s.options.length)return;
-  fonts.forEach(function(f){var o=document.createElement('option');
-   o.value=f;o.textContent=f;if(f===p[1])o.selected=true;s.appendChild(o);});});
- if(!el('tservice').value)el('tservice').value=S.service||'';
- if(!el('tslot').value)el('tslot').value=S.destination||'';
- if(!el('troute').value)el('troute').value=S.service||'';
- if(!el('ttext').value)el('ttext').value=S.destination||'';}
-el('sprog').addEventListener('change',function(){
- call('/api/show',{program:el('sprog').value,service:null,destination:null});});
-el('ssvc').addEventListener('change',async function(){
- S.service=el('ssvc').value||null;S.destination=null;render();});
-setInterval(poll,3000);poll();
-</script></body></html>
-"""
+ if(!j.ok){{toast('tmsg',j.error||'create failed',true);return;}}
+ location='/';
+}}
+async function uploadBitmap(){{
+ var f=el('upfile').files[0];
+ if(!f){{toast('upmsg','pick a PNG file first',true);return;}}
+ toast('upmsg','uploading...',false);
+ var rd=new FileReader();
+ rd.onload=async function(){{
+  var j=await api('/api/bitmap/upload',{{program:S.program,
+   service:el('usvc').value,destination:el('uslot').value,
+   filename:f.name,data:rd.result}});
+  if(!j.ok){{toast('upmsg',j.error||'upload failed',true);return;}}
+  S=j.state;renderSvcs();toast('upmsg','saved page',false);
+ }};
+ rd.readAsDataURL(f);
+}}
+var cprog=el('cprog');
+if(cprog)cprog.addEventListener('change',switchProgram);
+renderSvcs();fillCtx();
+</script>"""
+    return _shell("Create", "create", body)
 
 
 def serve(ctl, port):
@@ -871,7 +1105,18 @@ def serve(ctl, port):
         def do_GET(self):
             parts = urllib.parse.urlsplit(self.path)
             if parts.path in ("/", "/index.html"):
-                self._send(PAGE.encode(), "text/html")
+                self._send(board_html(outer.snapshot(),
+                                      _program_map()).encode(),
+                           "text/html; charset=utf-8")
+            elif parts.path == "/create":
+                q = urllib.parse.parse_qs(parts.query)
+                prog = (q.get("program") or [""])[0]
+                snap = (outer.snapshot_for(prog)
+                        if prog else None) or outer.snapshot()
+                self._send(create_html(
+                    snap, snap["program"],
+                    snap.get("fonts") or []).encode(),
+                    "text/html; charset=utf-8")
             elif parts.path == "/api/state":
                 self._json({"ok": True, "state": outer.snapshot()})
             elif parts.path == "/api/destfile":
@@ -911,6 +1156,31 @@ def serve(ctl, port):
         def do_POST(self):
             path = urllib.parse.urlsplit(self.path).path
             try:
+                if path == "/show":
+                    # board page form (urlencoded): retune + redirect.
+                    # Never JSON: the form must survive intact.
+                    try:
+                        ln = int(self.headers.get("Content-Length", 0))
+                    except (TypeError, ValueError):
+                        ln = 0
+                    form = urllib.parse.parse_qs(
+                        self.rfile.read(ln).decode(),
+                        keep_blank_values=True)
+                    g = lambda k: (form.get(k) or [""])[0] or None
+                    try:
+                        outer.show(g("program"), g("service"),
+                                   g("destination"))
+                    except (ValueError, SystemExit, OSError) as e:
+                        self._send(
+                            f"<html><body><p>show failed: "
+                            f"{html.escape(str(e))}</p>"
+                            f"<p><a href=\"/\">back</a></p></body></html>"
+                            .encode(), "text/html; charset=utf-8", 400)
+                        return
+                    self.send_response(303)
+                    self.send_header("Location", "/")
+                    self.end_headers()
+                    return
                 if path == "/api/show":
                     b = self._body() or {}
                     outer.show(b.get("program"),
@@ -975,9 +1245,8 @@ def serve(ctl, port):
                         if b.get("destination") not in dests:
                             raise ValueError("no such destination")
                         del dests[b.get("destination")]
-                        if not dests:
-                            raise ValueError(
-                                "service needs a destination")
+                        # may leave the service empty (valid: under
+                        # construction, yields no screens)
                         return "Deleted destination"
                     outer.message = _mutate(b.get("program"), _del2)
                     outer.refresh()
@@ -1001,9 +1270,6 @@ def serve(ctl, port):
                         if b.get("image") not in lst:
                             raise ValueError("no such page")
                         lst.remove(b.get("image"))
-                        if not lst:
-                            raise ValueError(
-                                "destination needs at least one page")
                         return "Deleted page"
                     outer.message = _mutate(b.get("program"), _rm)
                     outer.refresh()
@@ -1028,8 +1294,9 @@ def serve(ctl, port):
                         d.get("colour", d.get("color")), "colour")
                     if c is None:
                         raise ValueError("colour must be #rrggbb")
-                    dd["colour"] = "full" if c == "full" else \
-                        "#%02x%02x%02x" % c
+                    new_c = "full" if c == "full" else "#%02x%02x%02x" % c
+                    if str(dd.get("colour", "")).lower() != new_c.lower():
+                        dd["colour"] = new_c
                 if "rotation_speed" in d and d["rotation_speed"] not in (
                         None, ""):
                     try:
@@ -1038,7 +1305,12 @@ def serve(ctl, port):
                         raise ValueError("rotation_speed must be a number")
                     if r <= 0:
                         raise ValueError("rotation_speed must be positive")
-                    dd["rotation_speed"] = r
+                    try:
+                        same = float(dd.get("rotation_speed")) == r
+                    except (TypeError, ValueError):
+                        same = False
+                    if not same:
+                        dd["rotation_speed"] = r
                 for k in ("px_width", "px_height"):
                     if k in d and d[k] not in (None, ""):
                         try:
@@ -1047,7 +1319,12 @@ def serve(ctl, port):
                             raise ValueError(f"{k} must be a whole number")
                         if v <= 0:
                             raise ValueError(f"{k} must be positive")
-                        dd[k] = v
+                        try:
+                            same = int(float(dd.get(k))) == v
+                        except (TypeError, ValueError):
+                            same = False
+                        if not same:
+                            dd[k] = v
                 return "Saved defaults"
             try:
                 outer.message = _mutate(b.get("program"), _apply)

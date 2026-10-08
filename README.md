@@ -83,24 +83,31 @@ that user (`sudo chown -R kai:kai /home/kai/destination-board`).
 
 ## Portal
 
-- **Now showing** — program / service / destination pick; `Show on
-  board` retunes the matrix immediately.
-- **Programs** — create a blank `.dest`, upload a `.dest` file, delete,
-  or download the current one as JSON.
+Two pages (tabs at the top). Nothing you type is ever wiped by a
+background refresh:
+
+**Board (`/`)** — program / service / destination pick; `Show on
+board` retunes the matrix immediately. Only the status line and the
+screens strip update live; the form is never rewritten.
+
+**Create (`/create`)** — everything else, each action updating just
+its own region:
+
+- **Program** — switch the edited program, create a blank `.dest`,
+  upload a `.dest` file, delete, or download the current one.
 - **Defaults** — colour / rotation / panel size for the program.
 - **Services & destinations** — add services (route numbers) and
-  destinations (auto `service_code` numbering, editable), per-destination
-  colour override (`full` = bitmap colours) and rotation, page filmstrip
-  with per-page delete.
-- **Upload bitmap page** — PNG saved as
-  `<route>-<destination>-<next-page>.png` under
-  `bitmaps/<program>/<route>/` and appended to the destination.
+  destinations (auto `service_code` numbering), per-destination colour
+  override (`full` = bitmap colours) and rotation, per-destination
+  `show` (puts it on the board), page filmstrip with per-page delete.
+  Half-built services/destinations (no pages yet) are allowed.
 - **Create page from text** — type route / destination / via, pick layout,
   colour and BDF fonts (from `fonts/` only, never system fonts);
   `Preview` renders the 240x40 blind, `Create + show` saves the PNG,
-  appends it (new services/destinations created as needed, colour
-  override set to `full` since the pixels are final) and puts it on
-  the board.
+  appends it and puts it on the board.
+- **Upload bitmap page** — PNG saved as
+  `<route>-<destination>-<next-page>.png` under
+  `bitmaps/<program>/<route>/` and appended to the destination.
 
 ## Pi auto-start
 

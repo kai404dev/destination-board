@@ -151,9 +151,11 @@ def load_dest(path):
     # validate defaults early so typos fail fast
     defaults_of(data)
     for svc_no, dests in services.items():
-        if not isinstance(dests, dict) or not dests:
+        # a service may be empty while under construction in the portal
+        if not isinstance(dests, dict):
             raise SystemExit(f"program file {path}: service "
-                             f"'{svc_no}' needs at least one destination")
+                             f"'{svc_no}' must hold an object of "
+                             f"destinations")
         for dest_name, entry in dests.items():
             _validate_entry(path, svc_no, dest_name, entry)
     return data
@@ -164,9 +166,11 @@ def _validate_entry(path, svc_no, dest_name, entry):
     if not isinstance(entry, dict):
         raise SystemExit(f"program file {path}: {where} must be an object")
     maps = entry.get("bitmaps")
-    if not isinstance(maps, list) or not maps:
-        raise SystemExit(f"program file {path}: {where} needs a non-empty "
-                         f"'bitmaps' list")
+    # may be empty while under construction in the portal; resolve()
+    # simply yields no screens for such destinations
+    if not isinstance(maps, list):
+        raise SystemExit(f"program file {path}: {where} needs a "
+                         f"'bitmaps' list (may be empty)")
     for b in maps:
         if not isinstance(b, str) or not b.strip():
             raise SystemExit(f"program file {path}: {where} has an empty "
