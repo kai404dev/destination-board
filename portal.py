@@ -33,6 +33,7 @@ THIS_DIR = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, THIS_DIR)
 
 import destfile
+import render
 
 PROGRAMS_DIR = os.path.join(THIS_DIR, "programs")
 BITMAPS_DIR = os.path.join(THIS_DIR, "bitmaps")
@@ -128,6 +129,35 @@ def _norm_override(raw):
                 raise ValueError(f"{k} must be positive")
             ov[k] = v
     return ov
+
+
+def render_text_png(route, dest, via, style, colour, fonts=None):
+    """Render one 240x40 blind from typed text, BDF fonts only.
+
+    `fonts` is {"route": "<name>.bdf", "route_scale": 2, ...} for the
+    route/dest/via roles; names must live in fonts/ (render.get_font
+    rejects anything else, including system font names and paths).
+    Returns (png_bytes, info). Raises ValueError with a plain message.
+    """
+    fonts = fonts or {}
+    job = {"route": str(route or ""), "dest": str(dest or ""),
+           "via": str(via or ""), "style": str(style or "top").lower(),
+           "fg": colour or "#DB9600"}
+    for role in ("route", "dest", "via"):
+        f = fonts.get(role)
+        if f not in (None, ""):
+            job[f"{role}_font"] = str(f)
+        s = fonts.get(f"{role}_scale")
+        if s not in (None, ""):
+            try:
+                s = int(float(s))
+            except (TypeError, ValueError):
+                raise ValueError(f"{role} scale must be a whole number")
+            if s < 1 or s > 4:
+                raise ValueError(f"{role} scale must be 1-4")
+            job[f"{role}_scale"] = s
+    frame, info = render.render(job)  # ValueError propagates as-is
+    return render.encode_png(frame), info
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +331,7 @@ class Controller:
                 "defaults": defaults,
                 "services": services,
                 "screens": screens,
+                "fonts": render.available_fonts(),
                 "message": self.message,
             }
 
@@ -428,6 +459,101 @@ class Controller:
             self.message = msg
             return self.snapshot()
 
+    def create_text(self, program, service, slot, text_job,
+                    service_code=None, rotation=None):
+        """Create a destination page from typed text (BDF fonts only).
+
+        Renders one 240x40 blind, saves it as the next
+        `<route>-<destination>-<page>.png` page and selects it on the
+        board. New services/destinations are created as needed. The
+        destination gets `override.colour = "full"` (pixels are already
+        final) plus `rotation_speed` when given. Returns the snapshot.
+        """
+        slot = str(slot or "").strip()
+        service = str(service or "").strip()
+        if not service or not slot:
+            raise ValueError("name the service and destination slot")
+        png, info = render_text_png(
+            text_job.get("route", ""), text_job.get("dest", ""),
+            text_job.get("via", ""), text_job.get("style", "top"),
+            text_job.get("colour", "#DB9600") or "#DB9600",
+            fonts=text_job.get("fonts") or {})
+        if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("renderer produced a bad PNG")
+        rot = None
+        if rotation not in (None, ""):
+            try:
+                rot = float(rotation)
+            except (TypeError, ValueError):
+                raise ValueError("rotation must be a number")
+            if rot <= 0:
+                raise ValueError("rotation must be positive")
+
+        # next page path (mirrors add_bitmap naming)
+        try:
+            with open(_dest_path(program)) as f:
+                cur = json.load(f)
+        except (OSError, ValueError) as e:
+            raise ValueError(f"cannot read program: {e}")
+        have = []
+        try:
+            have = (cur.get("services") or {}).get(service, {}).get(
+                slot, {}).get("bitmaps") or []
+        except AttributeError:
+            have = []
+        stem = f"{service}-{destfile.slug(slot)}"
+        n = len(have) + 1
+        while True:
+            base = f"{stem}-{n}.png"
+            rel = "/".join(["bitmaps", destfile.slug(program),
+                            destfile.slug(service), base])
+            if rel not in have and not os.path.isfile(
+                    os.path.join(THIS_DIR, rel)):
+                break
+            n += 1
+        full = os.path.normpath(os.path.join(THIS_DIR, rel))
+        if not full.startswith(BITMAPS_DIR + os.sep):
+            raise ValueError("bad image path")
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        tmp_png = full + ".tmp"
+        with open(tmp_png, "wb") as f:
+            f.write(png)
+        os.replace(tmp_png, full)
+
+        def _ensure(data):
+            svcs = data.setdefault("services", {})
+            dests = svcs.setdefault(service, {})
+            e = dests.get(slot)
+            if not isinstance(e, dict):
+                e = dests[slot] = {"bitmaps": []}
+            if service_code not in (None, ""):
+                e["service_code"] = str(service_code)
+            elif not e.get("service_code"):
+                e["service_code"] = "%03d" % len(dests)
+            if not e.get("service_name"):
+                e["service_name"] = slot
+            ov = {"colour": "full"}  # pixels already final, no tint
+            if rot is not None:
+                ov["rotation_speed"] = rot
+            e["override"] = ov
+            lst = e.get("bitmaps")
+            if not isinstance(lst, list):
+                lst = e["bitmaps"] = []
+            if rel not in lst:
+                lst.append(rel)
+            return f"Added {base}"
+
+        _mutate(program, _ensure)
+        with self.lock:
+            self.program_name = program
+            self.service_name = service
+            self.dest_name = slot
+            self._save_control()
+            warns = info.get("warnings", [])
+            self.message = f"Showing {service} {slot}" + \
+                (f" ({'; '.join(warns)})" if warns else "")
+            return self.snapshot()
+
 
 # ---------------------------------------------------------------------------
 # HTTP
@@ -521,6 +647,29 @@ destination overrides it with <code>full</code> (keep bitmap colours).</div></di
 <div class="hint" id="upmsg">PNG only (ideally 240x40). Saved as
 <code>&lt;route&gt;-&lt;destination&gt;-&lt;next-page&gt;.png</code> and
 appended to the destination in order.</div></div>
+<div class="card"><h2>Create page from text (fonts/ only)</h2>
+<div class="grid">
+<label>service (route no.)<input id="tservice" placeholder="e.g. 43"></label>
+<label>destination slot<input id="tslot" placeholder="e.g. Sheffield"></label>
+<label>route text<input id="troute" placeholder="e.g. 43"></label>
+<label>destination text<input id="ttext" placeholder="e.g. Sheffield"></label>
+<label>via (optional)<input id="tvia" placeholder="e.g. Dronfield"></label>
+<label>layout<select id="tstyle"><option value="top">top - via over dest</option><option value="bottom">bottom - dest over via</option><option value="left">left - via | dest</option><option value="right">right - dest | via</option></select></label>
+<label>colour<input id="tcolour" value="#DB9600"></label>
+<label>rotation secs (optional)<input id="trot" placeholder="default"></label>
+<label>route font<select id="troute_font"></select></label>
+<label>route scale<select id="troute_scale"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+<label>dest font<select id="tdest_font"></select></label>
+<label>dest scale<select id="tdest_scale"><option selected>1</option><option>2</option><option>3</option><option>4</option></select></label>
+<label>via font<select id="tvia_font"></select></label>
+<label>via scale<select id="tvia_scale"><option selected>1</option><option>2</option><option>3</option><option>4</option></select></label>
+</div>
+<div class="row"><button class="ghost" onclick="previewText()">Preview</button>
+<button onclick="createText()">Create + show on board</button></div>
+<img id="tpreview" alt="preview" style="width:100%;max-width:480px;height:80px;object-fit:contain;background:#000;border-radius:6px;border:1px solid #3a3a42;display:none;image-rendering:pixelated;margin-top:8px">
+<div class="hint" id="tmsg">Rendered with BDF bitmap fonts from
+<code>fonts/</code> only - no system fonts. Saved as the next page of the
+slot and shown on the board.</div></div>
 </div>
 <script>
 var S=null;
@@ -605,7 +754,8 @@ function render(){
     p.className='hint';p.textContent='no pages yet - upload a PNG below.';
     strip.appendChild(p);}
    box.appendChild(strip);});
- });
+  });
+ fillFonts();
 }
 function esc(s){return String(s??'').replace(/[&<>"]/g,function(c){
  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
@@ -642,7 +792,34 @@ async function uploadBitmap(){var f=el('upfile').files[0];
   var j=await api('/api/bitmap/upload',{program:S.program,
    service:S.service,destination:S.destination,filename:f.name,data:rd.result});
   if(j){S=j.state;render();el('upmsg').textContent='saved - on screen now';}};
- rd.readAsDataURL(f);}
+  rd.readAsDataURL(f);}
+function textForm(){return {program:S.program,service:el('tservice').value,
+ slot:el('tslot').value,route:el('troute').value,text:el('ttext').value,
+ via:el('tvia').value,style:el('tstyle').value,
+ colour:el('tcolour').value||'#DB9600',rotation:el('trot').value,
+ fonts:{route:el('troute_font').value,route_scale:el('troute_scale').value,
+  dest:el('tdest_font').value,dest_scale:el('tdest_scale').value,
+  via:el('tvia_font').value,via_scale:el('tvia_scale').value}};}
+async function previewText(){var m=el('tmsg');m.textContent='rendering...';
+ var r=await fetch('/api/render-preview',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(textForm())});
+ var j=await r.json();
+ if(!j.ok){m.textContent=j.error||'preview failed';return;}
+ var im=el('tpreview');im.src=j.data;im.style.display='block';
+ m.textContent=j.lit+' lit pixels'+(j.warnings.length?' - '+j.warnings.join('; '):'');}
+async function createText(){var m=el('tmsg');m.textContent='creating...';
+ var j=await api('/api/create-text',textForm());
+ if(j){S=j.state;render();m.textContent='saved - on screen now';}}
+function fillFonts(){var fonts=S.fonts||[];
+ [['troute_font','10x20.bdf'],['tdest_font','10x20.bdf'],
+  ['tvia_font','6x13B.bdf']].forEach(function(p){
+  var s=el(p[0]);if(s.options.length)return;
+  fonts.forEach(function(f){var o=document.createElement('option');
+   o.value=f;o.textContent=f;if(f===p[1])o.selected=true;s.appendChild(o);});});
+ if(!el('tservice').value)el('tservice').value=S.service||'';
+ if(!el('tslot').value)el('tslot').value=S.destination||'';
+ if(!el('troute').value)el('troute').value=S.service||'';
+ if(!el('ttext').value)el('ttext').value=S.destination||'';}
 el('sprog').addEventListener('change',function(){
  call('/api/show',{program:el('sprog').value,service:null,destination:null});});
 el('ssvc').addEventListener('change',async function(){
@@ -807,6 +984,10 @@ def serve(ctl, port):
                     self._ok()
                 elif path == "/api/bitmap/upload":
                     self._bmp_upload(self._body(8 * 1024 * 1024) or {})
+                elif path == "/api/render-preview":
+                    self._render_preview(self._body() or {})
+                elif path == "/api/create-text":
+                    self._create_text(self._body() or {})
                 elif path == "/api/bitmap/delete":
                     b = self._body() or {}
 
@@ -938,6 +1119,40 @@ def serve(ctl, port):
                 outer.add_bitmap(b.get("program"), b.get("service"),
                                  b.get("destination"),
                                  b.get("filename", "upload.png"), png)
+            except ValueError as e:
+                self._fail(e)
+                return
+            self._ok()
+
+        def _render_preview(self, b):
+            try:
+                png, info = render_text_png(
+                    b.get("route", ""), b.get("destination", ""),
+                    b.get("via", ""), b.get("style", "top"),
+                    b.get("colour", "#DB9600") or "#DB9600",
+                    fonts=b.get("fonts") or {})
+            except ValueError as e:
+                self._fail(e)
+                return
+            self._json({"ok": True,
+                        "data": "data:image/png;base64," + base64.b64encode(
+                            png).decode(),
+                        "lit": info.get("lit", 0),
+                        "warnings": info.get("warnings", [])})
+
+        def _create_text(self, b):
+            try:
+                outer.create_text(
+                    b.get("program"), b.get("service"),
+                    b.get("slot", ""),
+                    {"route": b.get("route", ""),
+                     "dest": b.get("text", ""),
+                     "via": b.get("via", ""),
+                     "style": b.get("style", "top"),
+                     "colour": b.get("colour", "#DB9600") or "#DB9600",
+                     "fonts": b.get("fonts") or {}},
+                    service_code=b.get("service_code", ""),
+                    rotation=b.get("rotation", ""))
             except ValueError as e:
                 self._fail(e)
                 return
