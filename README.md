@@ -1,0 +1,105 @@
+# Destination board
+
+Bitmap programme board for 240x40 LED panels, modelled on the
+`bus/program.py` + ICU 602 portal in `depature-board` (same stdlib-only
+style, same tint/fit/dim pipeline, same live `*_control.json` follow).
+
+## Layout
+
+- `board.py` — matrix runner (mock / preview / live + portal hosting)
+- `portal.py` — web portal (create + upload programs, toggle the board)
+- `destfile.py` — `.dest` format model (load / validate / resolve)
+- `images.py` — stdlib PNG decode / scale / tint
+- `programs/*.dest` — programs (JSON, see below)
+- `bitmaps/<program>/<route>/<route>-<destination>-<page>.png` — pages
+- `board_control.json` — live pick the matrix follows (`program`,
+  `service`, `destination`; `null` = all)
+
+## `.dest` format
+
+```json
+{
+    "defaults": {
+        "colour": "#DB9600",
+        "rotation_speed": 3,
+        "px_width": 240,
+        "px_height": 40
+    },
+    "services": {
+        "43": {
+            "Sheffield": {
+                "service_code": "001",
+                "service_name": "Sheffield",
+                "override": {
+                    "colour": "full",
+                    "rotation_speed": 3,
+                    "px_width": 240,
+                    "px_height": 40
+                },
+                "bitmaps": [
+                    "bitmaps/example/43/43-sheffield-1.png",
+                    "bitmaps/example/43/43-sheffield-2.png"
+                ]
+            }
+        }
+    }
+}
+```
+
+- `services` is `{service number: {destination: entry}}`.
+- `colour` tints the page to one shade; `"full"` keeps the bitmap's own
+  colours. Cascade: `override.colour` → `defaults.colour`.
+- `rotation_speed` is seconds per page (override → defaults → 3).
+- Numbers or numeric strings accepted (`"3"` works like `3`).
+- `override` is optional and may hold any subset of the four keys.
+- Bitmap paths are project-root-relative, in play order.
+
+## Run it
+
+```bash
+python3 board.py --list                                  # what's installed
+python3 board.py programs/example.dest --list            # this program
+python3 board.py programs/example.dest --service 43 --mock --once
+python3 board.py programs/example.dest --service 43 \
+    --destination Sheffield --preview
+python3 portal.py                                       # http://localhost:4040
+sudo python3 board.py programs/example.dest --service 43 --portal
+```
+
+`--serve` hosts the portal without the matrix. The control file steers
+a live matrix within ~0.5s, same process or another one.
+
+## Portal
+
+- **Now showing** — program / service / destination pick; `Show on
+  board` retunes the matrix immediately.
+- **Programs** — create a blank `.dest`, upload a `.dest` file, delete,
+  or download the current one as JSON.
+- **Defaults** — colour / rotation / panel size for the program.
+- **Services & destinations** — add services (route numbers) and
+  destinations (auto `service_code` numbering, editable), per-destination
+  colour override (`full` = bitmap colours) and rotation, page filmstrip
+  with per-page delete.
+- **Upload bitmap page** — PNG saved as
+  `<route>-<destination>-<next-page>.png` under
+  `bitmaps/<program>/<route>/` and appended to the destination.
+
+## Pi auto-start
+
+```ini
+[Unit]
+Description=Destination board
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/kai/destination-board
+ExecStart=/home/kai/destination-board/.venv/bin/python board.py programs/example.dest --service 43 --portal --port 4040
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```

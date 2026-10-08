@@ -1,0 +1,42 @@
+{
+  "defaults": {
+    "colour": "#DB9600",
+    "rotation_speed": 3,
+    "px_width": 240,
+    "px_height": 40
+  },
+  "services": {
+    "43": {
+      "Sheffield": {
+        "service_code": "001",
+        "service_name": "Sheffield",
+        "bitmaps": [
+          "bitmaps/example/43/43-sheffield-1.png",
+          "bitmaps/example/43/43-sheffield-2.png"
+        ]
+      },
+      "Chesterfield": {
+        "service_code": "002",
+        "service_name": "Chesterfield",
+        "override": {
+          "colour": "full",
+          "rotation_speed": 5,
+          "px_width": 240,
+          "px_height": 40
+        },
+        "bitmaps": [
+          "bitmaps/example/43/43-chesterfield-1.png"
+        ]
+      }
+    },
+    "X17": {
+      "Matlock": {
+        "service_code": "003",
+        "service_name": "Matlock",
+        "bitmaps": [
+          "bitmaps/example/x17/x17-matlock-1.png"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# no third-party deps for board + portal (stdlib only).
+# On the Pi, the LED driver is needed for live output only:
+# pip install rpi-rgb-led-matrix
