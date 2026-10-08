@@ -111,7 +111,15 @@ def load_program(program, service=None, destination=None):
 
 
 def run_program(args, prog):
-    from rgbmatrix import RGBMatrix, RGBMatrixOptions
+    try:
+        from rgbmatrix import RGBMatrix, RGBMatrixOptions
+    except ImportError:
+        raise SystemExit(
+            "rgbmatrix is not installed in this venv (LED driver missing).\n"
+            "Build it with ./install.sh, or test without hardware:\n"
+            "  python3 board.py --list\n"
+            "  python3 board.py programs/example.dest --mock --once\n"
+            "  python3 board.py programs/example.dest --preview")
 
     options = RGBMatrixOptions()
     options.rows = args.led_rows
