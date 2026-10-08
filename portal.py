@@ -1836,7 +1836,7 @@ def serve(ctl, port):
                     rel = outer.stage_preview(png)
                     outer.flash(rel, colour="full", seconds=10)
                     flashed = True
-                except ValueError as e:
+                except (ValueError, OSError) as e:
                     warnings.append(f"board flash failed: {e}")
             self._json({"ok": True,
                         "data": "data:image/png;base64," + base64.b64encode(
