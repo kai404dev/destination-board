@@ -330,7 +330,6 @@ def main():
             import threading
             threading.Thread(target=serve, args=(ctl, args.port),
                              daemon=True).start()
-            print(f"portal on :{args.port}", file=sys.stderr, flush=True)
         run_dynamic(args, ctl)
         return
 
