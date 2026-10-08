@@ -69,7 +69,10 @@ sudo python3 board.py programs/example.dest --service 43 --portal --led-no-drop-
 ```
 
 `--serve` hosts the portal without the matrix. The control file steers
-a live matrix within ~0.5s, same process or another one.
+a live matrix within ~0.5s, same process or another one. The matrix
+loop also watches the `.dest` file and every played PNG: editing the
+program, re-rendering a page or saving pixels in the portal reaches
+the LEDs on its own — no restart.
 
 Combined matrix+portal runs need `--led-no-drop-privs`: the rgbmatrix
 driver otherwise drops root→`daemon` after hardware init, and the
@@ -104,10 +107,12 @@ its own region:
   with per-page delete. Half-built services/destinations (no pages
   yet) are allowed.
 - **Create page from text** — type route / destination / via, pick layout,
-  colour and BDF fonts (from `fonts/` only, never system fonts);
-  `Preview` renders the 240x40 blind in the browser *and* flashes it on
-  the real board for 10s; `Create + show` saves the PNG, appends it and
-  puts it on the board. Every text page remembers its source text, so
+  colour and BDF fonts (from `fonts/` only, never system fonts), nudge
+  each field pixel-by-pixel (All/Route/Dest/Via + arrow pad), and paint
+  touch-up dots on top of the render (paint/erase, they travel with the
+  text and bake into every render). `Preview` renders the 240x40 blind
+  in the browser *and* flashes it on the real board for 10s; `Create +
+  show` saves the PNG, appends it and puts it on the board. Every text page remembers its source text, so
   `edit text` on any page loads the exact route/destination/via/fonts
   back into this form — Preview and Create re-render over the same file.
 - **Upload bitmap page** — PNG saved as

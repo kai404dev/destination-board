@@ -105,6 +105,26 @@ def preview_expired(pv):
     return time.time() - pv.get("at", 0) >= pv.get("seconds", 0)
 
 
+def screens_fingerprint(prog):
+    """Mtimes of the .dest file + every screen PNG it plays.
+
+    The matrix loop re-resolves when this changes, so editing the
+    program, re-rendering a page or touching up pixels in the portal
+    reaches the LEDs without restarting anything.
+    """
+    mts = []
+    try:
+        mts.append(os.path.getmtime(prog.get("path") or ""))
+    except OSError:
+        mts.append(0)
+    for s in prog.get("screens") or []:
+        try:
+            mts.append(os.path.getmtime(_resolve_root(s.get("image"))))
+        except OSError:
+            mts.append(0)
+    return tuple(mts)
+
+
 def load_preview(pv):
     """Single-screen program for a flash-preview dict."""
     full = _resolve_root(pv["image"])
@@ -270,6 +290,8 @@ def run_dynamic(args, ctl):
     last = None
     last_file = read_control()
     last_pv = None
+    shown_prog = None
+    shown_fp = None
     while True:
         ctl.refresh()
         cur_file = read_control()
@@ -318,7 +340,12 @@ def run_dynamic(args, ctl):
             time.sleep(0.5)
             continue
         key = ctl.key()
-        if key != last:
+        force = (shown_prog is not None and
+                 screens_fingerprint(shown_prog) != shown_fp)
+        if force:
+            print("control: program files changed, reloading",
+                  file=sys.stderr, flush=True)
+        if force or key != last:
             try:
                 prog = ctl.resolve()
             except SystemExit as e:
@@ -327,9 +354,16 @@ def run_dynamic(args, ctl):
                 time.sleep(2)
                 continue
             last = key
-            args._watch = lambda k=key: bool(
-                ctl.refresh() or ctl.key() != k or
-                read_control() != last_file)
+            shown_prog = prog
+            shown_fp = screens_fingerprint(prog)
+
+            def _changed(k=key, p=prog, f=shown_fp):
+                if ctl.refresh() or ctl.key() != k or \
+                        read_control() != last_file:
+                    return True
+                return screens_fingerprint(p) != f
+
+            args._watch = _changed
             run_program(args, prog)
             args._watch = None
             if args.once:

@@ -14,10 +14,18 @@ Job shape (all keys optional except at least one of route/dest):
      "via_font": "6x13B.bdf",
      "route_scale": 2, "dest_scale": 1, "via_scale": 1,
      "fg": "#DB9600",                      # single #rrggbb colour
-     "gap": 4, "pad": 1}
+     "gap": 4, "pad": 1,
+     "offsets": {"route": [0, 0], "dest": [0, 0], "via": [0, 0]},
+     "touch": {"add": [[x, y]], "del": [[x, y]]}}
 
 Text is literal: no case changes, no "via " prefix. Type capitals and
 prefixes yourself if you want them.
+
+Per-field offsets shift each text 1px at a time (sign-studio nudge):
+{"route": [dx, dy], ...}, each clamped to -80..80. Touch-ups are pixel
+lists painted on top of the render (add = fg colour, del = black) and
+travel with the job -- they are re-applied on every render and baked
+into saved PNGs.
 
 Layouts (route number is the tall block on the right):
   top      via over dest, stacked on the left
@@ -350,6 +358,57 @@ def job_geometry(job):
             min(0.75, max(0.25, vfract)))
 
 
+def _clamp_nudge(v):
+    try:
+        return max(-80, min(80, int(v or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def norm_offsets(job):
+    """Per-field move offsets, always complete: {name: [dx, dy]}."""
+    raw = job.get("offsets")
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for name in ("route", "dest", "via"):
+        v = raw.get(name, None)
+        try:
+            if v is None:
+                raise ValueError
+            x, y = int(v[0]), int(v[1])
+        except (TypeError, ValueError, IndexError):
+            x, y = 0, 0
+        out[name] = [_clamp_nudge(x), _clamp_nudge(y)]
+    return out
+
+
+def norm_touch(job):
+    """Touch-up pixels traveling with the job: {add: [[x,y]], del: ...}.
+
+    Out-of-panel and malformed points are dropped. Raises ValueError on
+    a wrongly-shaped (non-list) value.
+    """
+    raw = job.get("touch")
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for key in ("add", "del"):
+        pts = raw.get(key, [])
+        if pts is None:
+            pts = []
+        if not isinstance(pts, list):
+            raise ValueError(f"touch.{key} must be a list of [x, y]")
+        clean = []
+        for p in pts:
+            try:
+                x, y = int(p[0]), int(p[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if 0 <= x < W and 0 <= y < H:
+                clean.append([x, y])
+        out[key] = clean
+    return out
+
+
 def layout_cells(route, dest, via, r_adv, d_adv, v_adv, style,
                  gap, pad, vfract):
     if style not in STYLES:
@@ -423,6 +482,8 @@ def render(job):
     vs = max(1, int(job.get("via_scale", DEFAULTS["via_scale"])))
     fg = parse_colour(job.get("fg", job.get("colour", DEFAULTS["fg"])))
     gap, pad, vfract = job_geometry(job)
+    offsets = norm_offsets(job)
+    touch = norm_touch(job)
 
     frame = bytearray(W * H * 3)
     warnings = []
@@ -455,9 +516,11 @@ def render(job):
     for name, cell in ordered:
         font, text, scale, ink = pick[name]
         adv = adv_of[name]
+        fdx, fdy = offsets[name]
         if "\n" in text:
             lit, miss, origin = stamp_multiline(
-                frame, font, text, cell, scale, fg, warnings, name)
+                frame, font, text, cell, scale, fg, warnings, name,
+                fdx, fdy)
             fields[name] = {"advance": adv, "lit": lit,
                             "cell": list(cell), "origin": list(origin)}
             missing.update(miss)
@@ -466,6 +529,8 @@ def render(job):
         if wide > 0:
             warnings.append(f"{name} too wide by {wide}px in this style")
         ox, baseline = place_centered(cell, adv, ink)
+        ox += fdx
+        baseline += fdy
         lit, miss = stamp(frame, font, text, ox, baseline, scale, fg)
         fields[name] = {"advance": adv, "lit": lit,
                         "cell": list(cell), "origin": [ox, baseline]}
@@ -477,11 +542,20 @@ def render(job):
         warnings.append("missing glyphs (blank): "
                         + ", ".join(sorted(missing)))
 
+    # touch-ups sit on top of the render (add = fg, del = black)
+    for x, y in touch["add"]:
+        o = (y * W + x) * 3
+        frame[o], frame[o + 1], frame[o + 2] = fg
+    for x, y in touch["del"]:
+        o = (y * W + x) * 3
+        frame[o], frame[o + 1], frame[o + 2] = 0, 0, 0
+
     lit_total = sum(1 for i in range(0, len(frame), 3)
                     if frame[i] or frame[i + 1] or frame[i + 2])
     info = {"w": W, "h": H, "style": style, "route": route,
             "dest": dest, "via": via, "fg": colour_hex(fg),
             "fields": fields, "lit": lit_total,
+            "touch": {"add": len(touch["add"]), "del": len(touch["del"])},
             "warnings": warnings}
     return frame, info
 

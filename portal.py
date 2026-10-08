@@ -155,18 +155,24 @@ def _norm_override(raw):
     return ov
 
 
-def render_text_png(route, dest, via, style, colour, fonts=None):
+def render_text_png(route, dest, via, style, colour, fonts=None,
+                    offsets=None, touch=None):
     """Render one 240x40 blind from typed text, BDF fonts only.
 
     `fonts` is {"route": "<name>.bdf", "route_scale": 2, ...} for the
     route/dest/via roles; names must live in fonts/ (render.get_font
     rejects anything else, including system font names and paths).
-    Returns (png_bytes, info). Raises ValueError with a plain message.
+    `offsets` is {"route": [dx, dy], ...} (sign-studio nudge, 1px
+    steps); `touch` is {"add": [[x, y]], "del": [[x, y]]} painted on
+    top of the render. Returns (png_bytes, info). Raises ValueError
+    with a plain message.
     """
     fonts = fonts or {}
     job = {"route": str(route or ""), "dest": str(dest or ""),
            "via": str(via or ""), "style": str(style or "top").lower(),
-           "fg": colour or "#DB9600"}
+           "fg": colour or "#DB9600",
+           "offsets": offsets if isinstance(offsets, dict) else {},
+           "touch": touch if isinstance(touch, dict) else {}}
     for role in ("route", "dest", "via"):
         f = fonts.get(role)
         if f not in (None, ""):
@@ -556,8 +562,11 @@ class Controller:
         style = str(text_job.get("style", "top") or "top")
         colour = str(text_job.get("colour", "#DB9600") or "#DB9600")
         fonts = text_job.get("fonts") or {}
+        offsets = text_job.get("offsets") or {}
+        touch = text_job.get("touch") or {}
         png, info = render_text_png(route, text, via, style, colour,
-                                    fonts=fonts)
+                                    fonts=fonts, offsets=offsets,
+                                    touch=touch)
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("renderer produced a bad PNG")
         rot = None
@@ -612,7 +621,9 @@ class Controller:
             f.write(png)
         os.replace(tmp_png, full)
         source = {"route": route, "dest": text, "via": via,
-                  "style": style, "colour": colour, "fonts": fonts}
+                  "style": style, "colour": colour, "fonts": fonts,
+                  "offsets": render.norm_offsets({"offsets": offsets}),
+                  "touch": render.norm_touch({"touch": touch})}
 
         def _ensure(data):
             svcs = data.setdefault("services", {})
@@ -1096,9 +1107,25 @@ per-destination override meaning "keep bitmap colours".</div></div>
 <div class="row" id="replrow" style="display:none">Updating
 <b id="replname"></b><button class="ghost" onclick="cancelReplace()">new page
 instead</button></div>
+<div class="row">Nudge (1px):
+<select id="nfield"><option value="all">All</option><option value="route">Route</option><option value="dest">Dest</option><option value="via">Via</option></select>
+<button class="ghost" onclick="nudge(-1,0)">&#9664;</button>
+<button class="ghost" onclick="nudge(0,-1)">&#9650;</button>
+<button class="ghost" onclick="nudge(0,1)">&#9660;</button>
+<button class="ghost" onclick="nudge(1,0)">&#9654;</button>
+<button class="ghost" onclick="nudge(0,0,true)">reset</button>
+<span class="hint" id="nudgepos"></span></div>
 <div class="row"><button class="ghost" onclick="previewText()">Preview</button>
 <button onclick="createText()">Create + show on board</button></div>
 <img id="tpreview" alt="preview" style="width:100%;max-width:480px;height:80px;object-fit:contain;background:#000;border-radius:6px;border:1px solid #3a3a42;display:none;image-rendering:pixelated;margin-top:8px">
+<canvas id="tcanvas" style="display:none;image-rendering:pixelated;background:#000;border:1px solid #3a3a42;margin-top:8px;touch-action:none"></canvas>
+<div class="row" id="touchrow" style="display:none">
+<button id="tt-paint" class="on">paint</button>
+<button id="tt-erase">erase</button>
+<button class="ghost" onclick="clearTouch()">clear</button>
+<button onclick="applyTouch()">Apply touch-ups</button>
+<span class="hint">dots paint on top of the render and travel with the text
+- repaint after every Preview</span></div>
 <div class="hint" id="tmsg">Rendered with BDF bitmap fonts from
 <code>fonts/</code> only - no system fonts. This card never reloads.</div>
 </div>
@@ -1261,6 +1288,15 @@ el('svcs').addEventListener('click',async function(e){{
   if(tf.dest_scale)el('tdest_scale').value=tf.dest_scale;
   if(tf.via)el('tvia_font').value=tf.via;
   if(tf.via_scale)el('tvia_scale').value=tf.via_scale;
+  var offs=(tsrc.offsets&&typeof tsrc.offsets==='object')?tsrc.offsets:{{}};
+  ['route','dest','via'].forEach(function(k){{
+   var v=offs[k];
+   OFFSETS[k]=(v&&!isNaN(parseInt(v[0],10))&&!isNaN(parseInt(v[1],10)))?
+    [parseInt(v[0],10),parseInt(v[1],10)]:[0,0];}});
+  var tch=(tsrc.touch&&typeof tsrc.touch==='object')?tsrc.touch:{{}};
+  TOUCH={{add:Array.isArray(tch.add)?tch.add:[],
+   del:Array.isArray(tch.del)?tch.del:[]}};
+  updateNudge();
   REPLACE=b.getAttribute('data-img');
   el('replname').textContent=REPLACE;
   el('replrow').style.display='flex';
@@ -1347,7 +1383,73 @@ function textForm(){{return {{program:S.program,
  fonts:{{route:el('troute_font').value,
   route_scale:el('troute_scale').value,dest:el('tdest_font').value,
   dest_scale:el('tdest_scale').value,via:el('tvia_font').value,
-  via_scale:el('tvia_scale').value}}}};}}
+  via_scale:el('tvia_scale').value}},
+ offsets:OFFSETS,touch:TOUCH}};}}
+var OFFSETS={{route:[0,0],dest:[0,0],via:[0,0]}};
+var TOUCH={{add:[],del:[]}};
+var TMODE='paint';
+var TSCALE=3;
+var timg=new Image();
+function updateNudge(){{
+ el('nudgepos').textContent='route '+OFFSETS.route+' dest '+OFFSETS.dest+
+  ' via '+OFFSETS.via;
+}}
+function nudge(dx,dy,reset){{
+ var f=el('nfield').value;
+ ['route','dest','via'].forEach(function(k){{
+  if(f==='all'||f===k)
+   OFFSETS[k]=reset?[0,0]:[OFFSETS[k][0]+dx,OFFSETS[k][1]+dy];}});
+ updateNudge();previewText();
+}}
+function tDot(p,col){{
+ var tc=el('tcanvas').getContext('2d');
+ tc.fillStyle=col;tc.beginPath();
+ tc.arc((p[0]+0.5)*TSCALE,(p[1]+0.5)*TSCALE,TSCALE*0.38,0,6.2832);tc.fill();
+}}
+function drawTouch(){{
+ var tc=el('tcanvas');tc.width=240*TSCALE;tc.height=40*TSCALE;
+ var cx=tc.getContext('2d');cx.imageSmoothingEnabled=false;
+ cx.drawImage(timg,0,0,tc.width,tc.height);
+ var col=el('tcolour').value||'#DB9600';
+ TOUCH.add.forEach(function(p){{tDot(p,col);}});
+ TOUCH.del.forEach(function(p){{tDot(p,'#000');}});
+ el('tcanvas').style.display='block';
+ el('touchrow').style.display='flex';
+}}
+timg.onload=function(){{drawTouch();}};
+function tCell(ev){{
+ var tc=el('tcanvas'),r=tc.getBoundingClientRect();
+ var x=Math.floor((ev.clientX-r.left)/r.width*240);
+ var y=Math.floor((ev.clientY-r.top)/r.height*40);
+ return [Math.max(0,Math.min(239,x)),Math.max(0,Math.min(39,y))];
+}}
+function tPush(x,y){{
+ var dst=TMODE==='erase'?TOUCH.del:TOUCH.add;
+ var src=TMODE==='erase'?TOUCH.add:TOUCH.del;
+ for(var i=src.length-1;i>=0;i--)
+  if(src[i][0]===x&&src[i][1]===y)src.splice(i,1);
+ var has=dst.some(function(p){{return p[0]===x&&p[1]===y;}});
+ if(!has)dst.push([x,y]);
+ tDot([x,y],TMODE==='erase'?'#000':(el('tcolour').value||'#DB9600'));
+}}
+var tdrawing=false;
+function tBind(){{
+ var tc=el('tcanvas');
+ tc.onpointerdown=function(ev){{ev.preventDefault();tdrawing=true;
+  var c=tCell(ev);tPush(c[0],c[1]);
+  try{{tc.setPointerCapture(ev.pointerId);}}catch(e){{}}}};
+ tc.onpointermove=function(ev){{if(!tdrawing)return;
+  var c=tCell(ev);tPush(c[0],c[1]);}};
+ window.addEventListener('pointerup',function(){{tdrawing=false;}});
+}}
+tBind();
+function setTMode(t){{TMODE=t;
+ el('tt-paint').className=(t==='paint')?'on':'ghost';
+ el('tt-erase').className=(t==='erase')?'on':'ghost';}}
+el('tt-paint').onclick=function(){{setTMode('paint');}};
+el('tt-erase').onclick=function(){{setTMode('erase');}};
+function clearTouch(){{TOUCH={{add:[],del:[]}};previewText();}}
+function applyTouch(){{previewText();}}
 async function previewText(){{
  toast('tmsg','rendering...',false);
  var form=textForm();form.board=true;
@@ -1357,6 +1459,7 @@ async function previewText(){{
  var j=await r.json();
  if(!j.ok){{toast('tmsg',j.error||'preview failed',true);return;}}
  var im=el('tpreview');im.src=j.data;im.style.display='block';
+ timg.src=j.data;
  toast('tmsg',j.lit+' lit pixels'+(j.warnings.length?' - '+
   j.warnings.join('; '):'')+(j.flashed?' - on the board for 10s':''),false);
 }}
@@ -1387,7 +1490,7 @@ async function uploadBitmap(){{
 }}
 var cprog=el('cprog');
 if(cprog)cprog.addEventListener('change',switchProgram);
-renderSvcs();fillCtx();
+renderSvcs();fillCtx();updateNudge();
 </script>"""
     return _shell("Create", "create", body)
 
@@ -1403,6 +1506,10 @@ def serve(ctl, port):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            if ctype.startswith("text/html"):
+                # never cache the app pages: a stale cached page has
+                # stale JS (e.g. a Preview button that can't flash)
+                self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -1915,7 +2022,9 @@ def serve(ctl, port):
                     b.get("route", ""), b.get("destination", ""),
                     b.get("via", ""), b.get("style", "top"),
                     b.get("colour", "#DB9600") or "#DB9600",
-                    fonts=b.get("fonts") or {})
+                    fonts=b.get("fonts") or {},
+                    offsets=b.get("offsets") or {},
+                    touch=b.get("touch") or {})
             except ValueError as e:
                 self._fail(e)
                 return
@@ -2012,7 +2121,9 @@ def serve(ctl, port):
                      "via": b.get("via", ""),
                      "style": b.get("style", "top"),
                      "colour": b.get("colour", "#DB9600") or "#DB9600",
-                     "fonts": b.get("fonts") or {}},
+                     "fonts": b.get("fonts") or {},
+                     "offsets": b.get("offsets") or {},
+                     "touch": b.get("touch") or {}},
                     service_code=b.get("service_code", ""),
                     rotation=b.get("rotation", ""),
                     replace=b.get("replace", ""))
