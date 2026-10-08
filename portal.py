@@ -334,7 +334,10 @@ class Controller:
                                    "service_code": e.get("service_code", ""),
                                    "service_name": e.get("service_name", d),
                                    "override": e.get("override") or {},
-                                   "bitmaps": list(e.get("bitmaps") or [])})
+                                   "bitmaps": list(e.get("bitmaps") or []),
+                                   "sources": (e.get("sources") or {})
+                                   if isinstance(e.get("sources"), dict)
+                                   else {}})
                     services.append({"number": s, "destinations": ds})
             screens = []
             if data:
@@ -383,7 +386,10 @@ class Controller:
                                "service_code": e.get("service_code", ""),
                                "service_name": e.get("service_name", d),
                                "override": e.get("override") or {},
-                               "bitmaps": list(e.get("bitmaps") or [])})
+                               "bitmaps": list(e.get("bitmaps") or []),
+                               "sources": (e.get("sources") or {})
+                               if isinstance(e.get("sources"), dict)
+                               else {}})
                 services.append({"number": s, "destinations": ds})
             same = (program == self.program_name)
             return {
@@ -527,24 +533,31 @@ class Controller:
             return self.snapshot()
 
     def create_text(self, program, service, slot, text_job,
-                    service_code=None, rotation=None):
+                    service_code=None, rotation=None, replace=None):
         """Create a destination page from typed text (BDF fonts only).
 
         Renders one 240x40 blind, saves it as the next
         `<route>-<destination>-<page>.png` page and selects it on the
-        board. New services/destinations are created as needed. The
-        destination gets `override.colour = "full"` (pixels are already
-        final) plus `rotation_speed` when given. Returns the snapshot.
+        board - or, with `replace` set to an existing page of the slot,
+        re-renders over that file instead. New services/destinations
+        are created as needed. The destination gets
+        `override.colour = "full"` (pixels are already final) plus
+        `rotation_speed` when given. The render job is stored as
+        `sources[page]` so the text can be edited again later.
+        Returns the snapshot.
         """
         slot = str(slot or "").strip()
         service = str(service or "").strip()
         if not service or not slot:
             raise ValueError("name the service and destination slot")
-        png, info = render_text_png(
-            text_job.get("route", ""), text_job.get("dest", ""),
-            text_job.get("via", ""), text_job.get("style", "top"),
-            text_job.get("colour", "#DB9600") or "#DB9600",
-            fonts=text_job.get("fonts") or {})
+        route = str(text_job.get("route", "") or "")
+        text = str(text_job.get("dest", "") or "")
+        via = str(text_job.get("via", "") or "")
+        style = str(text_job.get("style", "top") or "top")
+        colour = str(text_job.get("colour", "#DB9600") or "#DB9600")
+        fonts = text_job.get("fonts") or {}
+        png, info = render_text_png(route, text, via, style, colour,
+                                    fonts=fonts)
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("renderer produced a bad PNG")
         rot = None
@@ -555,8 +568,9 @@ class Controller:
                 raise ValueError("rotation must be a number")
             if rot <= 0:
                 raise ValueError("rotation must be positive")
-
-        # next page path (mirrors add_bitmap naming)
+        replace = str(replace or "").strip() or None
+        # load the current entry first: replace targets must be
+        # validated BEFORE anything is written
         try:
             with open(_dest_path(program)) as f:
                 cur = json.load(f)
@@ -568,24 +582,37 @@ class Controller:
                 slot, {}).get("bitmaps") or []
         except AttributeError:
             have = []
-        stem = f"{service}-{destfile.slug(slot)}"
-        n = len(have) + 1
-        while True:
-            base = f"{stem}-{n}.png"
-            rel = "/".join(["bitmaps", destfile.slug(program),
-                            destfile.slug(service), base])
-            if rel not in have and not os.path.isfile(
-                    os.path.join(THIS_DIR, rel)):
-                break
-            n += 1
-        full = os.path.normpath(os.path.join(THIS_DIR, rel))
-        if not full.startswith(BITMAPS_DIR + os.sep):
-            raise ValueError("bad image path")
-        os.makedirs(os.path.dirname(full), exist_ok=True)
+        if replace is not None:
+            rfull = os.path.normpath(os.path.join(THIS_DIR, replace))
+            if not rfull.startswith(BITMAPS_DIR + os.sep):
+                raise ValueError("bad image path")
+            if not os.path.isfile(rfull):
+                raise ValueError("no such page to replace")
+            if replace not in have:
+                raise ValueError("page not in this destination")
+            rel, base = replace, os.path.basename(replace)
+            full = rfull
+        else:
+            stem = f"{service}-{destfile.slug(slot)}"
+            n = len(have) + 1
+            while True:
+                base = f"{stem}-{n}.png"
+                rel = "/".join(["bitmaps", destfile.slug(program),
+                                destfile.slug(service), base])
+                if rel not in have and not os.path.isfile(
+                        os.path.join(THIS_DIR, rel)):
+                    break
+                n += 1
+            full = os.path.normpath(os.path.join(THIS_DIR, rel))
+            if not full.startswith(BITMAPS_DIR + os.sep):
+                raise ValueError("bad image path")
+            os.makedirs(os.path.dirname(full), exist_ok=True)
         tmp_png = full + ".tmp"
         with open(tmp_png, "wb") as f:
             f.write(png)
         os.replace(tmp_png, full)
+        source = {"route": route, "dest": text, "via": via,
+                  "style": style, "colour": colour, "fonts": fonts}
 
         def _ensure(data):
             svcs = data.setdefault("services", {})
@@ -606,9 +633,16 @@ class Controller:
             lst = e.get("bitmaps")
             if not isinstance(lst, list):
                 lst = e["bitmaps"] = []
-            if rel not in lst:
+            if replace is not None:
+                if rel not in lst:
+                    raise ValueError("page not in this destination")
+            elif rel not in lst:
                 lst.append(rel)
-            return f"Added {base}"
+            src = e.get("sources")
+            if not isinstance(src, dict):
+                src = e["sources"] = {}
+            src[rel] = source
+            return f"Updated {base}" if replace else f"Added {base}"
 
         _mutate(program, _ensure)
         with self.lock:
@@ -1059,6 +1093,9 @@ per-destination override meaning "keep bitmap colours".</div></div>
 <label>via font{_fontsel("tvia_font", "6x13B.bdf")}</label>
 <label>via scale<select id="tvia_scale"><option selected>1</option><option>2</option><option>3</option><option>4</option></select></label>
 </div>
+<div class="row" id="replrow" style="display:none">Updating
+<b id="replname"></b><button class="ghost" onclick="cancelReplace()">new page
+instead</button></div>
 <div class="row"><button class="ghost" onclick="previewText()">Preview</button>
 <button onclick="createText()">Create + show on board</button></div>
 <img id="tpreview" alt="preview" style="width:100%;max-width:480px;height:80px;object-fit:contain;background:#000;border-radius:6px;border:1px solid #3a3a42;display:none;image-rendering:pixelated;margin-top:8px">
@@ -1145,12 +1182,20 @@ function renderSvcs(){{
     fl.setAttribute('data-act','flash-page');
     fl.setAttribute('data-svc',sv.number);fl.setAttribute('data-dest',
      d.name);fl.setAttribute('data-img',img);
-    var ed=document.createElement('button');ed.textContent='edit';
+    var ed=document.createElement('button');ed.textContent='edit leds';
     ed.className='ghost';ed.setAttribute('data-act','edit-page');
     ed.setAttribute('data-svc',sv.number);ed.setAttribute('data-dest',
      d.name);ed.setAttribute('data-img',img);
     f.appendChild(im);f.appendChild(cap);
-    f.appendChild(fl);f.appendChild(ed);f.appendChild(b);
+    f.appendChild(fl);
+    var tsrc=(d.sources||{{}})[img];
+    if(tsrc){{var tx=document.createElement('button');
+     tx.textContent='edit text';
+     tx.setAttribute('data-act','edit-text');
+     tx.setAttribute('data-svc',sv.number);tx.setAttribute('data-dest',
+      d.name);tx.setAttribute('data-img',img);
+     f.appendChild(tx);}}
+    f.appendChild(ed);f.appendChild(b);
     strip.appendChild(f);}});
    if(!(d.bitmaps||[]).length){{var p=document.createElement('div');
     p.className='hint';p.textContent='no pages yet.';strip.appendChild(p);}}
@@ -1196,6 +1241,31 @@ el('svcs').addEventListener('click',async function(e){{
   if(!j.ok){{toast('smsg',j.error||'failed',true);return;}}
   S=j.state;renderSvcs();
   toast('smsg',S.message||'flashing on board',false);
+  return;
+ }}else if(act==='edit-text'){{
+  var dd=null;
+  (S.services||[]).forEach(function(sv2){{
+   if(sv2.number===svc)sv2.destinations.forEach(function(x){{
+    if(x.name===dest)dd=x;}});}});
+  var tsrc=dd&&dd.sources?dd.sources[b.getAttribute('data-img')]:null;
+  if(!tsrc){{toast('smsg','no text source for this page',true);return;}}
+  el('tservice').value=svc;el('tslot').value=dest;
+  el('troute').value=tsrc.route||'';el('ttext').value=tsrc.dest||'';
+  el('tvia').value=tsrc.via||'';el('tstyle').value=tsrc.style||'top';
+  el('tcolour').value=tsrc.colour||'#DB9600';
+  el('trot').value=(dd.override&&dd.override.rotation_speed)||'';
+  var tf=tsrc.fonts||{{}};
+  if(tf.route)el('troute_font').value=tf.route;
+  if(tf.route_scale)el('troute_scale').value=tf.route_scale;
+  if(tf.dest)el('tdest_font').value=tf.dest;
+  if(tf.dest_scale)el('tdest_scale').value=tf.dest_scale;
+  if(tf.via)el('tvia_font').value=tf.via;
+  if(tf.via_scale)el('tvia_scale').value=tf.via_scale;
+  REPLACE=b.getAttribute('data-img');
+  el('replname').textContent=REPLACE;
+  el('replrow').style.display='flex';
+  toast('smsg','text loaded below - Preview then Create to update',false);
+  document.getElementById('tservice').scrollIntoView();
   return;
  }}else if(act==='edit-page'){{
   location='/edit?image='+encodeURIComponent(b.getAttribute('data-img'));
@@ -1292,10 +1362,15 @@ async function previewText(){{
 }}
 async function createText(){{
  toast('tmsg','creating...',false);
- var j=await api('/api/create-text',textForm());
+ var form=textForm();if(REPLACE)form.replace=REPLACE;
+ var j=await api('/api/create-text',form);
  if(!j.ok){{toast('tmsg',j.error||'create failed',true);return;}}
+ REPLACE=null;el('replrow').style.display='none';
  location='/';
 }}
+var REPLACE=null;
+function cancelReplace(){{REPLACE=null;
+ el('replrow').style.display='none';}}
 async function uploadBitmap(){{
  var f=el('upfile').files[0];
  if(!f){{toast('upmsg','pick a PNG file first',true);return;}}
@@ -1546,6 +1621,9 @@ def serve(ctl, port):
                         if b.get("image") not in lst:
                             raise ValueError("no such page")
                         lst.remove(b.get("image"))
+                        src = e.get("sources")
+                        if isinstance(src, dict):
+                            src.pop(b.get("image"), None)
                         return "Deleted page"
                     outer.message = _mutate(b.get("program"), _rm)
                     outer.refresh()
@@ -1660,8 +1738,9 @@ def serve(ctl, port):
                         new_service=None):
             """Rename a destination's PNG files to a new stem.
 
-            Returns the rewritten bitmaps list. Files not matching the
-            expected `<route>-<destination>-<page>.png` pattern are left
+            Returns (rewritten bitmaps list, {old rel: new rel} incl.
+            identity entries). Files not matching the expected
+            `<route>-<destination>-<page>.png` pattern are left
             untouched. Raises ValueError on collision.
             """
             pslug = destfile.slug(program)
@@ -1703,7 +1782,8 @@ def serve(ctl, port):
                 os.rmdir(os.path.join(THIS_DIR, old_dir))
             except OSError:
                 pass
-            return [n for _, _, _, n in plan]
+            return ([n for _, _, _, n in plan],
+                    {o: n for _, _, o, n in plan})
 
         def _rename_service(self, b):
             prog = b.get("program")
@@ -1723,9 +1803,14 @@ def serve(ctl, port):
                 if new in svcs:
                     raise ValueError(f"service '{new}' exists")
                 for dname in list(svcs[svc].keys()):
-                    moved = self._move_pages(prog, svc, dname, dname,
-                                             new_service=new)
+                    moved, remap = self._move_pages(
+                        prog, svc, dname, dname, new_service=new)
                     svcs[svc][dname]["bitmaps"] = moved
+                    src = svcs[svc][dname].get("sources")
+                    if isinstance(src, dict):
+                        svcs[svc][dname]["sources"] = {
+                            remap[k]: v for k, v in src.items()
+                            if k in remap}
                 items = [(new if k == svc else k, v)
                          for k, v in svcs.items()]
                 svcs.clear()
@@ -1769,7 +1854,12 @@ def serve(ctl, port):
                 if new != dest:
                     if new in dests:
                         raise ValueError(f"destination '{new}' exists")
-                    e["bitmaps"] = self._move_pages(prog, svc, dest, new)
+                    moved, remap = self._move_pages(prog, svc, dest, new)
+                    e["bitmaps"] = moved
+                    src = e.get("sources")
+                    if isinstance(src, dict):
+                        e["sources"] = {remap[k]: v for k, v in src.items()
+                                        if k in remap}
                     items = [(new if k == dest else k, v)
                              for k, v in dests.items()]
                     dests.clear()
@@ -1924,7 +2014,8 @@ def serve(ctl, port):
                      "colour": b.get("colour", "#DB9600") or "#DB9600",
                      "fonts": b.get("fonts") or {}},
                     service_code=b.get("service_code", ""),
-                    rotation=b.get("rotation", ""))
+                    rotation=b.get("rotation", ""),
+                    replace=b.get("replace", ""))
             except ValueError as e:
                 self._fail(e)
                 return
